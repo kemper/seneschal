@@ -142,6 +142,55 @@ async def main() -> int:
         check(log == "navigated:/expeditions", "Enter clicks the live nav link", f"log={log!r}")
         check(await overlay.is_hidden(), "palette closes after activation")
 
+        # --- most-recently-used ordering -------------------------------------
+        # EXPEDITIONS was just activated, which swapped the sub-nav row. Walk
+        # back through REALM (so MARKET is on the page again) and jump to it,
+        # then reopen with an empty query: the list is your history, newest
+        # first, so Cmd-K then Enter repeats your last jump.
+        async def jump(query: str) -> None:
+            await page.keyboard.press("ControlOrMeta+k")
+            await page.wait_for_timeout(150)
+            await page.keyboard.type(query)
+            await page.wait_for_timeout(150)
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(200)
+
+        await jump("realm")
+        await jump("market")
+
+        await page.keyboard.press("ControlOrMeta+k")
+        await page.wait_for_timeout(200)
+        labels = await item_labels()
+        check(
+            labels[:3] == ["MARKET", "REALM", "EXPEDITIONS"],
+            "an empty query lists destinations most-recently-used first",
+            str(labels[:5]),
+        )
+        groups = await page.evaluate(
+            "() => [...document.getElementById('seneschal-root')"
+            ".shadowRoot.querySelectorAll('.sen-group')].map(e => e.textContent)"
+        )
+        check(groups[:1] == ["Recent"], "the history sits under a Recent heading", str(groups[:3]))
+
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(200)
+        log = await page.locator("#log").text_content()
+        check(log == "navigated:/market", "Cmd-K then Enter repeats the last jump", f"log={log!r}")
+
+        # Typing still ranks by match quality, not by history.
+        await page.keyboard.press("ControlOrMeta+k")
+        await page.wait_for_timeout(150)
+        await page.keyboard.type("exped")
+        await page.wait_for_timeout(150)
+        labels = await item_labels()
+        check(
+            bool(labels) and "EXPEDITIONS" in labels[0],
+            "a query still ranks by match quality",
+            str(labels[:3]),
+        )
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(120)
+
         # --- arrow keys ------------------------------------------------------
         await page.keyboard.press("ControlOrMeta+k")
         await page.wait_for_timeout(150)
@@ -159,6 +208,32 @@ async def main() -> int:
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(150)
         check(await overlay.is_hidden(), "Escape closes the palette")
+
+        # --- the warm index must not go stale --------------------------------
+        # The index is built in the background so that opening the palette does
+        # no scanning at all. The risk that buys is staleness, so: add a nav
+        # entry, and it has to be findable.
+        await page.evaluate(
+            """() => {
+                const link = document.createElement('a');
+                link.setAttribute('href', '/treasury');
+                link.textContent = 'TREASURY ●';
+                document.querySelector('nav.c3d4').appendChild(link);
+            }"""
+        )
+        await page.wait_for_timeout(1200)  # past the quiet period, into the idle rebuild
+        await page.keyboard.press("ControlOrMeta+k")
+        await page.wait_for_timeout(200)
+        await page.keyboard.type("treas")
+        await page.wait_for_timeout(200)
+        labels = await item_labels()
+        check(
+            bool(labels) and "TREASURY" in labels[0],
+            "a nav entry added after startup is indexed",
+            str(labels[:3]),
+        )
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(120)
 
         # --- learning survives losing the header, and does not need the ● ----
         # Strip BOTH nav rows, as if we had navigated to a door that does not

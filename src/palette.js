@@ -12,6 +12,15 @@
   const LEARNED_KEY = "seneschal.learned.v1";
   const FRECENCY_KEY = "seneschal.frecency.v1";
 
+  // How long the DOM has to stay still before we rebuild the index. The game
+  // re-renders its boards on a timer, so rebuilding on every mutation would
+  // burn CPU continuously; waiting for a lull costs nothing, because the index
+  // is only ever needed when you press Cmd-K.
+  const REBUILD_QUIET_MS = 700;
+
+  const onIdle =
+    globalThis.requestIdleCallback?.bind(globalThis) || ((fn) => setTimeout(fn, 0));
+
   // --- persistence ---------------------------------------------------------
   // chrome.storage is async and may be unavailable (e.g. when the file is
   // opened outside an extension context), so every access is guarded.
@@ -39,25 +48,81 @@
       this.items = [];
       this.results = [];
       this.cursor = 0;
+      this.rows = [];   // the rendered rows, so cursor moves need no lookup
       this.query = "";
       this.learned = {};   // key -> {label, path, group}  (nav seen in the past)
       this.frecency = {};  // key -> {n, last}
       this.lastFocus = null;
+      // Switched off from the toolbar popup or the options page. Default on, so
+      // a storage read that fails never leaves the user without the palette.
+      this.enabled = true;
+      // The index is kept warm in the background; `stale` says whether the page
+      // has changed since it was built.
+      this.stale = true;
+      this.rebuildTimer = null;
       this._build();
     }
 
     async init() {
       this.learned = this._prune(await store.get(LEARNED_KEY, {}));
       this.frecency = await store.get(FRECENCY_KEY, {});
-      // Learn from the current page immediately, so the very first Cmd-K in a
-      // session already knows about this door's sub-nav.
-      this._learn(SEN.scanner.scan());
+      this._applySettings(await store.get(SEN.config.STORAGE_KEY, null));
+
+      try {
+        chrome.storage.onChanged.addListener((changes, area) => {
+          if (area !== "local" || !changes[SEN.config.STORAGE_KEY]) return;
+          this._applySettings(changes[SEN.config.STORAGE_KEY].newValue);
+        });
+      } catch {
+        /* no live sync; a reload still picks the setting up */
+      }
+
+      // Build the index up front — this also learns the current page's sub-nav,
+      // so the very first Cmd-K already knows about it — and then keep it warm
+      // in the background. show() must never scan: scanning is the expensive
+      // part, and doing it on the keystroke is what made the palette feel slow.
+      this._rebuild();
+      this._watchForChanges();
+    }
+
+    /**
+     * Rebuild the index off the interaction path. Skipped while the palette is
+     * open (the list would shift under the cursor) and while the tab is in the
+     * background; `stale` stays set, so show() picks the work up if it must.
+     */
+    _rebuild() {
+      if (this.open) return;
+      this.items = this._index();
+      this.stale = false;
+    }
+
+    /** Mark the index stale when the page changes, and refresh it once it settles. */
+    _watchForChanges() {
+      const observer = new MutationObserver(() => {
+        this.stale = true;
+        clearTimeout(this.rebuildTimer);
+        this.rebuildTimer = setTimeout(() => {
+          if (this.open || document.hidden) return; // try again after the next change
+          onIdle(() => {
+            if (this.stale) this._rebuild();
+          });
+        }, REBUILD_QUIET_MS);
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    /** Adopt the on/off switch, closing the palette if it was just turned off. */
+    _applySettings(stored) {
+      this.enabled = SEN.config.normalize(stored).config.palette.enabled;
+      if (!this.enabled && this.open) this.hide();
     }
 
     // --- DOM ---------------------------------------------------------------
     _build() {
       this.host = document.createElement("div");
       this.host.id = "seneschal-root";
+      // Tags the subtree as ours, so the scanner never indexes our own UI.
+      this.host.setAttribute("data-seneschal", "palette");
       this.root = this.host.attachShadow({ mode: "open" });
 
       const style = document.createElement("style");
@@ -192,8 +257,48 @@
     }
 
     // --- filtering ---------------------------------------------------------
+    /** key -> position in most-recently-used order (0 is the last thing you picked). */
+    _recencyRanks() {
+      const ranks = new Map();
+      Object.entries(this.frecency)
+        .sort((a, b) => (b[1].last || 0) - (a[1].last || 0))
+        .forEach(([key], i) => ranks.set(key, i));
+      return ranks;
+    }
+
+    _keyOf(item) {
+      return SEN.scanner.normalizeKey(item.label) || item.label.toLowerCase();
+    }
+
+    /**
+     * With no query, the list is simply your history: everything you have
+     * jumped to before, most recent first, under one "Recent" heading, then
+     * everything else in its normal groups. Opening Cmd-K and pressing Enter
+     * therefore repeats your last jump.
+     */
+    _recentFirst(ranks) {
+      const used = [];
+      const rest = [];
+      for (const item of this.items) {
+        (ranks.has(this._keyOf(item)) ? used : rest).push(item);
+      }
+      used.sort((a, b) => ranks.get(this._keyOf(a)) - ranks.get(this._keyOf(b)));
+      rest.sort(
+        (a, b) =>
+          Number(Boolean(b.el)) - Number(Boolean(a.el)) || a.label.localeCompare(b.label)
+      );
+
+      return [
+        ...used.map((item) => ({ item, group: "Recent", score: 0, positions: [] })),
+        ...rest.map((item) => ({ item, group: item.group, score: 0, positions: [] })),
+      ].slice(0, MAX_RESULTS);
+    }
+
     _filter() {
       const q = this.query.trim();
+      const ranks = this._recencyRanks();
+      if (!q) return this._recentFirst(ranks);
+
       const scored = [];
 
       for (const item of this.items) {
@@ -222,7 +327,7 @@
         // than one we merely remember.
         if (item.el) score += 6;
 
-        scored.push({ item, score, positions });
+        scored.push({ item, group: item.group, score, positions });
       }
 
       scored.sort((a, b) => b.score - a.score || a.item.label.localeCompare(b.item.label));
@@ -232,11 +337,11 @@
       // their best member, so grouping never demotes the top hit.
       const order = new Map();
       for (const s of scored) {
-        if (!order.has(s.item.group)) order.set(s.item.group, order.size);
+        if (!order.has(s.group)) order.set(s.group, order.size);
       }
       scored.sort(
         (a, b) =>
-          order.get(a.item.group) - order.get(b.item.group) ||
+          order.get(a.group) - order.get(b.group) ||
           b.score - a.score ||
           a.item.label.localeCompare(b.item.label)
       );
@@ -248,6 +353,7 @@
     _render() {
       this.results = this._filter();
       this.list.textContent = "";
+      this.rows = [];
 
       if (!this.results.length) {
         const empty = document.createElement("div");
@@ -257,16 +363,22 @@
         return;
       }
 
+      // Build off-document and attach once, so a keystroke costs one layout
+      // pass instead of one per row.
+      const frag = document.createDocumentFragment();
       let lastGroup = null;
       this.results.forEach((res, i) => {
         const { item, positions } = res;
+        // The heading comes from the RESULT, not the item: an entry shown for
+        // its recency is filed under "Recent" wherever it normally lives.
+        const group = res.group || item.group;
 
-        if (item.group !== lastGroup) {
+        if (group !== lastGroup) {
           const g = document.createElement("div");
           g.className = "sen-group";
-          g.textContent = item.group;
-          this.list.appendChild(g);
-          lastGroup = item.group;
+          g.textContent = group;
+          frag.appendChild(g);
+          lastGroup = group;
         }
 
         const row = document.createElement("div");
@@ -295,9 +407,11 @@
 
         row.addEventListener("mousemove", () => this._moveTo(i));
         row.addEventListener("click", () => this._activate(i));
-        this.list.appendChild(row);
+        this.rows.push(row);
+        frag.appendChild(row);
       });
 
+      this.list.appendChild(frag);
       this._scrollToCursor();
     }
 
@@ -334,17 +448,19 @@
     }
 
     _scrollToCursor() {
-      const el = this.list.querySelector(`[data-index="${this.cursor}"]`);
-      if (el) el.scrollIntoView({ block: "nearest" });
+      this.rows[this.cursor]?.scrollIntoView({ block: "nearest" });
     }
 
+    /**
+     * Moving the cursor touches exactly two rows — no re-render, and no
+     * querySelector: the rows are held from the last render, so Ctrl-N / Ctrl-P
+     * is two attribute writes and a scroll.
+     */
     _moveTo(i) {
       if (i === this.cursor || i < 0 || i >= this.results.length) return;
-      const prev = this.list.querySelector(`[data-index="${this.cursor}"]`);
-      if (prev) prev.setAttribute("aria-selected", "false");
+      this.rows[this.cursor]?.setAttribute("aria-selected", "false");
       this.cursor = i;
-      const next = this.list.querySelector(`[data-index="${i}"]`);
-      if (next) next.setAttribute("aria-selected", "true");
+      this.rows[i]?.setAttribute("aria-selected", "true");
       this._scrollToCursor();
     }
 
@@ -392,44 +508,60 @@
     // --- keys / visibility --------------------------------------------------
     _onKey(e) {
       if (!this.open) return;
+
+      // Every key we act on is also stopped here. Otherwise it goes on to the
+      // game, which binds plenty of its own shortcuts and re-renders in
+      // response — that work lands between the keypress and the cursor moving,
+      // which is exactly what makes Ctrl-N / Ctrl-P feel sluggish.
+      const claim = () => {
+        e.preventDefault();
+        e.stopPropagation();
+      };
+
       switch (e.key) {
         case "Escape":
-          e.preventDefault();
-          e.stopPropagation();
+          claim();
           this.hide();
           break;
         case "ArrowDown":
-          e.preventDefault();
+          claim();
           this._move(1);
           break;
         case "ArrowUp":
-          e.preventDefault();
+          claim();
           this._move(-1);
           break;
         case "Tab":
-          e.preventDefault();
+          claim();
           this._move(e.shiftKey ? -1 : 1);
           break;
         case "Enter":
-          e.preventDefault();
+          claim();
           this._activate();
           break;
         case "n":
         case "p":
+        case "N":
+        case "P":
           if (e.ctrlKey) {
-            e.preventDefault();
-            this._move(e.key === "n" ? 1 : -1);
+            claim();
+            this._move(e.key.toLowerCase() === "n" ? 1 : -1);
           }
           break;
       }
     }
 
     show() {
-      if (this.open) return;
+      if (this.open || !this.enabled) return;
+      // Before `open` is set, because _rebuild() refuses to run while the
+      // palette is up. Normally a no-op — the background rebuild has already
+      // done the work — and it only costs anything if the page changed in the
+      // last instant.
+      if (this.stale) this._rebuild();
+
       this.lastFocus = document.activeElement;
       this.open = true;
       this.overlay.hidden = false;
-      this.items = this._index();
       this.query = "";
       this.input.value = "";
       this.cursor = 0;

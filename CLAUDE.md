@@ -45,9 +45,27 @@ React tree, and a production React build exposes no stable handle on state
 anyway. Own the rendering. The extension and the game only need to agree on URLs
 and the JSON API.
 
-**6. For data, read the JSON API, not the DOM.** `/api/empire/summary`,
+**6. `innerText` is a reflow, and it was the palette's main cost.** The
+scanner's ●-marker pre-filter runs over EVERY clickable on the page; reading
+`innerText` there forced a synchronous layout per element (measured 5x slower
+than `textContent` on 800 nodes). Same class of problem: `findHeaderRoot()`
+walks every `a`/`div`/`span`/`h1`, so it caches. And the index is now built in
+the background — **`show()` must never scan.** If you add work to the open
+path, you are undoing this.
+
+**7. Anything the palette's key handler acts on must `stopPropagation()`.**
+Otherwise the game also handles the key and re-renders, and that lands between
+the keypress and the cursor moving. This is what made Ctrl-N / Ctrl-P sluggish.
+
+**8. For data, read the JSON API, not the DOM.** `/api/empire/summary`,
 `/api/trade`, `/api/bounties`, `/api/alliances` return stable structured JSON.
 Scraping rendered numbers is the brittle path.
+
+**9. Quick menu `menu` entries are deliberately coupled to a visible label.**
+That is the only handle contextual sub-nav offers, so instead of engineering the
+coupling away, the failure is made LOUD: walk the door, wait `RESOLVE_MS`, and
+if the entry never appears, warn on screen and in the console naming the
+pattern. `test/dock.py` holds that line. Don't "fix" it into a silent no-op.
 
 ## Working agreements
 
@@ -57,6 +75,10 @@ Scraping rendered numbers is the brittle path.
   a backtick inside a CSS comment terminating the JS template literal holding
   the whole stylesheet; a harvester that abandoned you on whatever page its walk
   ended on.
+- **Look at a screenshot before calling UI done.** Two layout bugs in the
+  quick menu survived a green test suite and died instantly on a screenshot:
+  the rail was not flush with the screen edge, and opening the add form shoved
+  the whole rail sideways. Both were child-order problems in one flex row.
 - **Fixtures use opaque class names on purpose**, to prove the scanner is not
   leaning on readable selectors. Keep that.
 - Be explicit about which layers are stable and which are best-effort. The
@@ -67,11 +89,17 @@ Scraping rendered numbers is the brittle path.
 ```bash
 node --test test/fuzzy.test.mjs     # 12
 node --test test/learned.test.mjs   # 11
-python3 test/e2e.py                 # 21
+node --test test/config.test.mjs    # 26
+python3 test/e2e.py                 # 26
+python3 test/dock.py                # 40
 python3 test/harvest.py             # 15
 ```
 
-59 checks. Keep them passing.
+130 checks. Keep them passing.
+
+`test/dock.py` drives the options page and the toolbar popup as real
+extension pages (get the id from `ctx.service_workers[0].url`), which is also
+the only way to write `chrome.storage` from a test.
 
 Two gotchas already solved — don't re-hit them:
 
@@ -91,6 +119,12 @@ captured page text without live-site access, and it shows: **11 of its 23 entrie
 have no path at all**, and `/lore` and `/inventory` are inferred. Ask the user to
 open wardenfall.com, paste `tools/harvest-nav.js` into DevTools, and hand back
 what it prints; paste that over the array in `catalog.js`.
+
+**0. Settings live in one object**, `seneschal.settings.v1` in
+`chrome.storage.local`: `{ palette: {enabled}, dock: {enabled, side, collapsed,
+items} }`. Both surfaces watch `chrome.storage.onChanged`, so toggles land live
+in every tab. `src/config.js` is the only place that decides what is valid;
+never validate an entry anywhere else.
 
 **2. Decide whether to strip the runtime learning index.** The user leans toward
 a plain hardcoded list, and that is probably right — once the catalog is

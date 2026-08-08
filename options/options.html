@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Seneschal — quick menu</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main>
+    <header class="head">
+      <h1>Seneschal</h1>
+      <p class="sub">
+        Two things on <strong>wardenfall.com</strong>: a Cmd-K command palette, and
+        a floating quick menu. Either can be switched off entirely. Quick menu
+        entries go either to a path, or to a menu entry by name — which is how you
+        reach sub-navigation that only exists once you are inside its parent door.
+      </p>
+    </header>
+
+    <section class="panel">
+      <h2>What runs on the page</h2>
+      <label class="row-check">
+        <input type="checkbox" id="palette-enabled" />
+        <span>Command palette <small>— Cmd-K / Ctrl-K</small></span>
+      </label>
+      <label class="row-check">
+        <input type="checkbox" id="enabled" />
+        <span>Quick menu <small>— the floating rail</small></span>
+      </label>
+
+      <fieldset class="side">
+        <legend>Side of the screen</legend>
+        <label><input type="radio" name="side" value="left" /> Left</label>
+        <label><input type="radio" name="side" value="right" /> Right</label>
+      </fieldset>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Entries</h2>
+        <button type="button" id="add" class="primary">Add entry</button>
+      </div>
+      <div id="items" class="items"></div>
+      <p class="hint">
+        <strong>Path</strong> — <code>/market</code>, or a full <code>https://</code>
+        URL (external links open in a new tab).<br />
+        <strong>Menu entry name</strong> — matched against what the link says on
+        screen, ignoring case, emoji and the trailing dot: <code>craftables</code>
+        matches <code>🛠 CRAFTABLES ●</code>. Wrap it in slashes for a regular
+        expression: <code>/^hunt/i</code>.<br />
+        <strong>Open first</strong> — where to go when that entry is not on the
+        current page. Seneschal navigates there, waits for the menu to render, and
+        clicks it. If it never shows up you get a visible warning rather than a
+        button that quietly does nothing.
+      </p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Backup</h2>
+        <div class="panel-actions">
+          <button type="button" id="export">Copy as JSON</button>
+          <button type="button" id="import">Replace from JSON</button>
+          <button type="button" id="reset" class="danger">Reset to defaults</button>
+        </div>
+      </div>
+      <textarea id="json" spellcheck="false" aria-label="Quick menu configuration as JSON"></textarea>
+    </section>
+
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </main>
+
+  <script src="../src/config.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

@@ -62,18 +62,29 @@
    * Locate the header: walk up from the "WARDENFALL" brand until we reach an
    * ancestor holding several links. Falls back to semantic landmarks.
    */
+  let headerCache = null;
+
   function findHeaderRoot() {
+    // Finding the brand means walking every a/div/span/h1 in the document, so
+    // hold on to the answer. The game re-renders constantly; a root that has
+    // been swapped out is simply detached, which is cheap to notice.
+    if (headerCache && headerCache.isConnected) return headerCache;
+
     const brand = [...document.querySelectorAll("a, div, span, h1")].find(
       (el) => cleanLabel(el.textContent).toUpperCase() === "WARDENFALL"
     );
     if (brand) {
       let node = brand;
       for (let hops = 0; node && hops < 8; hops++) {
-        if (node.querySelectorAll("a[href]").length >= 4) return node;
+        if (node.querySelectorAll("a[href]").length >= 4) {
+          headerCache = node;
+          return node;
+        }
         node = node.parentElement;
       }
     }
-    return document.querySelector("header, [role='banner'], nav") || null;
+    headerCache = document.querySelector("header, [role='banner'], nav") || null;
+    return headerCache;
   }
 
   /** Collect the candidate containers we are willing to harvest from. */
@@ -96,13 +107,22 @@
    *
    * @returns {Array<{key,label,group,path,el,inNav,marked,learnable}>}
    */
+  /**
+   * Is this element part of Seneschal's own UI? Both the palette and the dock
+   * render inside shadow roots, which document.querySelectorAll cannot reach
+   * into — this is the belt to that braces, and it covers any future surface
+   * because the hosts are tagged with `data-seneschal` rather than by id.
+   */
+  function isOurs(el) {
+    return Boolean(el.closest("[data-seneschal]"));
+  }
+
   function scan() {
     const seen = new Map();
     const roots = navRoots();
-    const host = document.getElementById("seneschal-root");
 
     const consider = (el, inNav) => {
-      if (host && host.contains(el)) return; // never index our own UI
+      if (isOurs(el)) return; // never index our own UI
       if (!isVisible(el)) return;
 
       const rawText = (el.innerText || el.textContent || "").replace(/ /g, " ");
@@ -145,8 +165,15 @@
     }
 
     // Catch-all for nav rows rendered outside any landmark: the ● marker.
+    //
+    // PERFORMANCE: this pre-filter runs over EVERY clickable on the page, so it
+    // must not touch layout. `innerText` is layout-dependent — reading it forces
+    // a synchronous reflow per element, and on the real game (hundreds of
+    // buttons) that was most of what opening the palette cost. textContent is
+    // free. Only the handful of elements that survive reach consider(), where
+    // the pricier rendered-text and visibility checks are affordable.
     document.querySelectorAll(CLICKABLE).forEach((el) => {
-      const text = (el.innerText || el.textContent || "").replace(/ /g, " ").trim();
+      const text = (el.textContent || "").replace(/ /g, " ").trim();
       if (NAV_MARKER.test(text)) consider(el, false);
     });
 
@@ -161,16 +188,18 @@
     if (item.el && item.el.isConnected && isVisible(item.el)) return item.el;
 
     if (item.path) {
-      const byHref = [...document.querySelectorAll(`a[href="${CSS.escape(item.path)}"]`)].find(isVisible);
+      const byHref = [...document.querySelectorAll(`a[href="${CSS.escape(item.path)}"]`)].find(
+        (el) => isVisible(el) && !isOurs(el)
+      );
       if (byHref) return byHref;
     }
     const wanted = item.label.toLowerCase();
     return (
       [...document.querySelectorAll(CLICKABLE)].find(
-        (el) => isVisible(el) && labelOf(el).toLowerCase() === wanted
+        (el) => isVisible(el) && !isOurs(el) && labelOf(el).toLowerCase() === wanted
       ) || null
     );
   }
 
-  SEN.scanner = { scan, resolve, cleanLabel, labelOf, findHeaderRoot, normalizeKey };
+  SEN.scanner = { scan, resolve, cleanLabel, labelOf, findHeaderRoot, normalizeKey, isOurs, isVisible };
 })();

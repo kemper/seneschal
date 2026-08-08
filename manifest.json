@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Seneschal",
-  "version": "0.1.0",
-  "description": "A command palette for Wardenfall. Press Cmd-K / Ctrl-K to fuzzy-jump to anything in the game's header.",
+  "version": "0.2.0",
+  "description": "A command palette and a configurable floating quick menu for Wardenfall. Press Cmd-K / Ctrl-K to fuzzy-jump anywhere.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -12,6 +12,17 @@
   "permissions": [
     "storage"
   ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Seneschal — turn the palette and quick menu on or off"
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
   "content_scripts": [
     {
       "matches": [
@@ -21,10 +32,13 @@
       "js": [
         "src/fuzzy.js",
         "src/catalog.js",
+        "src/config.js",
         "src/learned.js",
         "src/scanner.js",
         "src/styles.js",
+        "src/dock-styles.js",
         "src/palette.js",
+        "src/dock.js",
         "src/content.js"
       ],
       "run_at": "document_idle",
