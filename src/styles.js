@@ -22,9 +22,12 @@
   justify-content: center;
   align-items: flex-start;
   padding-top: 14vh;
-  background: rgba(6, 8, 12, 0.62);
-  backdrop-filter: blur(2px);
-  animation: sen-fade 90ms ease-out;
+  background: rgba(6, 8, 12, 0.68);
+  /* No backdrop-filter. A full-screen blur is recomposited every frame over
+     whatever the game is animating underneath, which is real GPU work for a
+     decorative effect — and it is felt most on exactly the machines that can
+     least afford it. A slightly darker scrim reads the same. */
+  animation: sen-fade 60ms ease-out;
 }
 
 /* An author display rule beats the UA stylesheet's [hidden]{display:none},
@@ -48,7 +51,7 @@
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
   line-height: 1.45;
-  animation: sen-rise 110ms ease-out;
+  animation: sen-rise 70ms ease-out;
 }
 
 .sen-inputrow {

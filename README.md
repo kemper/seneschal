@@ -1,12 +1,17 @@
 # Seneschal
 
-A Chrome extension that adds a **Cmd-K / Ctrl-K command palette** to
-[Wardenfall](https://wardenfall.com) — fuzzy-search every destination in the
-game's navigation and jump straight there.
+A Chrome extension for [Wardenfall](https://wardenfall.com) with two surfaces:
+
+- a **Cmd-K / Ctrl-K command palette** — fuzzy-search every destination in the
+  game's navigation and jump straight there, most-recently-used first;
+- a **floating quick menu** — a configurable rail on the left or right edge,
+  holding the handful of places you actually go.
+
+Either can be switched off entirely from the toolbar popup.
 
 *A seneschal is the officer who administers the estate on the lord's behalf.*
 
-<!-- v0.1.0 — command palette only. Dashboard is future work; see "Where this goes next". -->
+<!-- v0.2.0 — palette + quick menu. Dashboard is future work; see "Where this goes next". -->
 
 ## Install (unpacked, developer mode)
 
@@ -25,6 +30,8 @@ reload the game tab.
 | `Enter` | jump |
 | `Esc`, or click the backdrop | close |
 
+Click the toolbar icon for the on/off switches and a way into the full editor.
+
 ## How it finds things
 
 Wardenfall's navigation is **contextual**: only the six primary doors
@@ -41,8 +48,37 @@ So the index draws on three sources, most-trusted first:
    `chrome.storage.local`. Browsing naturally teaches it the whole tree.
 3. **Seed catalog** (`src/catalog.js`) so it is useful on a fresh install.
 
-Entries you pick often float to the top (frecency), and destinations visible on
-screen right now outrank remembered ones.
+**With an empty query the list is your history** — everything you have jumped
+to before, most recent first, under a `Recent` heading, with everything else
+below in its normal groups. So `Cmd-K` `Enter` repeats your last jump. Start
+typing and match quality takes over again, with recency breaking near-ties;
+destinations visible on screen right now outrank remembered ones.
+
+### Keeping it instant
+
+The palette must feel like it costs nothing, including on a laptop in low-power
+mode. Three things buy that:
+
+- **Opening the palette does no scanning.** The index is built at startup and
+  kept warm in the background: a `MutationObserver` marks it stale, and it is
+  rebuilt during an idle callback once the page has been still for 700ms. The
+  game re-renders its boards on a timer, so waiting for a lull matters — and
+  the rebuild is skipped entirely while the palette is open or the tab is in
+  the background.
+- **Nothing in the hot path touches layout.** The scan's pre-filter runs over
+  every clickable on the page, and it used to read `innerText`, which is
+  layout-dependent — a forced synchronous reflow *per element*. It reads
+  `textContent` now (measured 5× faster on a page of 800 buttons), and the
+  header-root search, which walks every `a`/`div`/`span`/`h1` looking for the
+  brand, caches its answer until the node is detached.
+- **Keys the palette handles do not reach the game.** `Ctrl-N` / `Ctrl-P`,
+  the arrows and `Enter` all `stopPropagation()`. Otherwise every cursor move
+  also ran whatever the game binds to that key, and that work landed between
+  the keypress and the highlight moving. Cursor moves themselves touch two
+  rows — no re-render, no `querySelector`.
+
+The overlay has no `backdrop-filter` for the same reason: a full-screen blur is
+recomposited every frame over whatever the game is animating underneath.
 
 ### Two deliberate choices
 
@@ -57,27 +93,73 @@ to render near-empty on a hard load but paint correctly when reached through the
 nav link. Clicking also leaves the router's own state intact. `location.assign`
 is only a last-resort fallback.
 
+## The floating quick menu
+
+A rail pinned to the left or right edge, holding whatever you put on it. Add a
+page without leaving the game with the **＋** button on the rail; the **⚙**
+opens the full editor (reorder, rename, change sides, import/export JSON).
+
+Entries come in two kinds, and the second is the interesting one:
+
+| Kind | Field | What happens on click |
+| --- | --- | --- |
+| **Path** | `/market` | Clicks a live anchor for that path if one is on screen, else navigates. A full `https://` URL opens in a new tab. |
+| **Menu entry** | `craftables`, plus an optional door `/empire` | Clicks the navigation entry whose **visible label** matches. If nothing on this page matches, it goes through the door first, waits for the row to render, and clicks it there. |
+
+The second kind exists because the game's sub-navigation is contextual:
+`CRAFTABLES`, `ARENA` and `🐗 HUNT` have no address you can usefully link to
+from elsewhere — the honest description of the journey is "go to
+`/expeditions`, then click the thing called ARENA", and that is what the entry
+stores.
+
+A pattern is matched with case, spacing, emoji and the trailing `●` folded
+away, so `craftables` matches `🛠 CRAFTABLES ●`. Wrap it in slashes
+(`/^hunt/i`) for a real regular expression.
+
+**When a pattern stops matching, it says so.** After the door has been walked
+and the entry still has not appeared, you get a visible warning naming the
+pattern, plus a `console.warn` — not a button that quietly does nothing. That
+matters because a pattern is coupled to a visible label, and the game renames
+things.
+
+The pending click is held in `sessionStorage` as well as in memory, so it
+survives a full page load and not just same-document routing.
+
 ## Layout
 
 ```
 manifest.json         MV3, one content script bundle, "storage" permission
 src/fuzzy.js          subsequence scorer (word-start / run / prefix bonuses)
 src/catalog.js        the destination list — regenerate with tools/harvest-nav.js
+src/config.js         settings model for both surfaces (pure, unit-tested)
 src/learned.js        retention policy for remembered nav (pure, unit-tested)
 src/scanner.js        harvests jump targets from the live DOM
-src/styles.js         CSS, injected into the shadow root
+src/styles.js         palette CSS, injected into its shadow root
+src/dock-styles.js    quick menu CSS, injected into its shadow root
 src/palette.js        index, filter, render, activate
-src/content.js        entry point; binds the Cmd-K chord
+src/dock.js           the quick menu: render, activate, walk doors, warn loudly
+src/background.js     service worker; exists only to open the options page
+src/content.js        entry point; mounts both surfaces, binds the Cmd-K chord
+popup/                toolbar popup: the two on/off switches
+options/              the quick menu editor
 tools/harvest-nav.js  DevTools one-shot: walks the doors, prints a catalog
 test/fuzzy.test.mjs   matcher unit tests
 test/learned.test.mjs retention-policy unit tests
+test/config.test.mjs  settings model: patterns, paths, validation
 test/e2e.py           loads the real unpacked extension in Chromium
+test/dock.py          drives the quick menu, options page and popup
 test/harvest.py       proves the harvester finds nav hidden behind other doors
 ```
 
-The whole UI lives in a **shadow root** on a host appended to
+Each surface lives in its own **shadow root**, on a host appended to
 `document.documentElement`, so the game's stylesheet cannot reach in, ours
-cannot leak out, and the game re-rendering `<body>` cannot sweep it away.
+cannot leak out, and the game re-rendering `<body>` cannot sweep it away. Both
+hosts carry `data-seneschal`, which is how the scanner knows never to index our
+own buttons.
+
+Settings live in one object under `seneschal.settings.v1` in
+`chrome.storage.local`; both surfaces watch `chrome.storage.onChanged`, so a
+toggle or an edit lands in every open tab without a reload.
 
 ## Refreshing the destination list
 
@@ -104,11 +186,13 @@ keep up on its own.
 ```bash
 node --test test/fuzzy.test.mjs     # 12 matcher unit tests
 node --test test/learned.test.mjs   # 11 retention-policy unit tests
-python3 test/e2e.py                 # 21 checks, real extension in Chromium
+node --test test/config.test.mjs    # 26 settings-model unit tests
+python3 test/e2e.py                 # 26 checks, real extension in Chromium
+python3 test/dock.py                # 40 checks, the quick menu end to end
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 59 pass.
+All 130 pass.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the
 unpacked extension with `--load-extension`, and drives it exactly as a user
@@ -116,11 +200,17 @@ would: press Cmd-K, type, arrow around, hit Enter, and assert the correct anchor
 was clicked. It uses opaque class names in the fixture on purpose, to prove the
 scanner is not secretly depending on readable selectors.
 
-Every bug found during development was caught by that harness rather than by
-reading the code: an author `display: flex` silently overriding the `hidden`
-attribute, a backtick inside a CSS comment terminating the JS template literal
-that holds the stylesheet, and a harvester that abandoned you on whatever page
-its walk happened to end on.
+`dock.py` does the same for the quick menu, and drives the options page and the
+popup as real extension pages: it asserts that flipping a switch there changes
+the live dock in the game tab.
+
+Every bug found during development was caught by that harness — or by looking
+at a screenshot — rather than by reading the code: an author `display: flex`
+silently overriding the `hidden` attribute, a backtick inside a CSS comment
+terminating the JS template literal that holds the stylesheet, a harvester that
+abandoned you on whatever page its walk happened to end on, a `Recent` heading
+that never rendered because the group was read off the wrong object, and a rail
+that shoved itself sideways every time the add form opened.
 
 ## Where this goes next
 
@@ -140,7 +230,7 @@ notes for that work:
 
 The layers are not equally stable, so it is worth being precise.
 
-**Very stable.** The matcher is a pure function. The shadow-root UI cannot be
+**Very stable.** The settings model and the matcher are pure functions. The shadow-root UI cannot be
 reached by the game's CSS. The Cmd-K binding is a capture-phase listener, and
 Chrome lets pages claim Cmd-K (which is why every web app uses it).
 
@@ -157,6 +247,12 @@ would have quietly stopped learning anything, with no error and no visible
 symptom until the index went stale. It is now one of *two* independent signals
 (the other structural: living inside a `header`/`nav`), either sufficient. The
 fixture carries an unmarked entry specifically to hold that line.
+
+**The quick menu's pattern entries are the deliberate exception.** They are
+coupled to a visible label by design — that is the only handle a contextual menu
+entry offers. So the failure is made loud instead of being engineered away: walk
+the door, wait, and if the entry never appears, say which pattern missed. Fixing
+it is a one-field edit in the options page.
 
 **Known limits, accepted.** A renamed destination lingers in the remembered
 index until its 90-day TTL expires — clicking a stale one falls through to a
