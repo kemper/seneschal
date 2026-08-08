@@ -72,6 +72,36 @@ coupling away, the failure is made LOUD: walk the door, wait `RESOLVE_MS`, and
 if the entry never appears, warn on screen and in the console naming the
 pattern. `test/dock.py` holds that line. Don't "fix" it into a silent no-op.
 
+**10. There is NO heal endpoint, and no REST API for mutations at all.**
+Measured: the game drives writes through Next.js **Server Actions**
+(`createServerReference` x33, `callServer` x50). Every `/api/*` route in the
+whole bundle set is a peripheral read — `alliances/pending-count`,
+`messages/unread-count`, `news`, `conquest/chat`, `auth/logout`. The heal
+button's `onClick` is a plain closure with **no exposed action reference** in
+props or fiber, so there is nothing to call directly; and a hand-built
+`Next-Action` POST would depend on a per-build hash that changes every deploy.
+**Don't go looking for the endpoint again — it isn't there.**
+
+**11. The hidden same-origin iframe is the safe way to drive game UI.**
+The site sends no `X-Frame-Options` and no CSP, so it frames itself and
+`contentDocument` is reachable. Measured for loading `/conquest` and selecting
+a siege location: **33 requests, all GET, zero POSTs, zero localStorage
+writes.** So getting to a control costs nothing and cannot disturb the page the
+user is looking at — only the final click mutates. Note localStorage IS shared
+across same-origin frames, which is why the write count was checked rather than
+assumed.
+
+**12. Heal buttons carry `title="Heal <Name> for 4 <Resource>"`.** Hero, cost
+and currency in plain readable text — the durable handle. Each class heals with
+a different resource (mage Cinder-Coal, warrior Greathide, rogue Fluxsalt,
+archer Warden-Resin). Buttons are `disabled` when `hp === maxHp`.
+
+**13. `/heroes` prints the roster TWICE**, and both are needed: a roster row
+with class icon and level (`● 🔮 Krogdolf Lv50`) and an HP row with current/max
+(`Heroes Krogdolf 489/489 · ...`). The page also carries ratios that are NOT hp
+(`Power 900/70`, `Morale 100/85`); the parser rejects them by requiring
+`current <= max`.
+
 ## Working agreements
 
 - **Verify in a browser; do not trust reading.** Every bug so far was caught by
@@ -151,6 +181,14 @@ the unread count is IN the label. The harvester strips a trailing number and
 keys entries on the stable form; getting this wrong made every run report
 Messages as both gone and new. Anything that matches or dedupes on a visible
 label must assume the label can move.
+
+**3c. Selection state is styling-only.** The raid page's region picker marks
+the selected button with Tailwind colour classes (`border-amber-400
+text-amber-300`) and nothing else — no `aria-selected`, no `data-state`, not in
+the URL, not in localStorage. To detect a selection, diff a button's class
+signature against its SIBLINGS (odd-one-out) rather than hardcoding a colour,
+so a palette change cannot break it. `?realm=near` IS in the URL, so that axis
+is preserved for free by restoring the full URL.
 
 **4. Arena sound effects — deliberately NOT in this repo yet.** The user wants
 spell sounds, bow twangs, hit grunts, death cries. Playing audio is trivial;

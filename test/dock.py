@@ -40,9 +40,21 @@ def check(ok: bool, label: str, detail: str = "") -> None:
 
 
 def serve(directory: Path) -> tuple[int, socketserver.TCPServer]:
-    handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(  # noqa: E731
-        *a, directory=str(directory), **kw
-    )
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        """Serve extensionless game paths the way the real site does.
+
+        The hero panel fetches /heroes and /conquest, which on the live site
+        are pages, not files. Map them onto the fixture's .html so the panel
+        can be exercised end to end.
+        """
+
+        def translate_path(self, path):
+            bare = path.split("?")[0].rstrip("/")
+            if bare in ("/heroes", "/conquest"):
+                path = bare + ".html"
+            return super().translate_path(path)
+
+    handler = lambda *a, **kw: Handler(*a, directory=str(directory), **kw)  # noqa: E731
     httpd = socketserver.TCPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd.server_address[1], httpd
@@ -449,6 +461,55 @@ async def main() -> int:
         check(
             await page.locator("#seneschal-dock").count() == 1,
             "the dock comes back after a full page load",
+        )
+
+        # --- the hero panel --------------------------------------------------
+        await options.evaluate(
+            """async () => {
+                const key = 'seneschal.settings.v1';
+                await chrome.storage.local.remove(key);
+            }"""
+        )
+        await page.bring_to_front()
+        await page.reload(wait_until="load")
+        await page.wait_for_timeout(1500)  # let /heroes be fetched and parsed
+
+        heroes = await page.evaluate(
+            f"() => [...{DOCK}.querySelectorAll('.dk-hero')].map(r => ({{"
+            "  name: r.querySelector('.dk-hero-name')?.textContent,"
+            "  hp: r.querySelector('.dk-hero-hp')?.textContent,"
+            "  heal: !!r.querySelector('.dk-heal') }))"
+        )
+        check(len(heroes) == 5, "hero panel lists every hero", str(heroes))
+        check(
+            [h["name"] for h in heroes] == ["Krogdolf", "Krogloff", "Krogsly", "Krogman", "Krogdore"],
+            "heroes are named and ordered as the page has them",
+            str([h["name"] for h in heroes]),
+        )
+        check(
+            [h["name"] for h in heroes if h["heal"]] == ["Krogdolf", "Krogsly"],
+            "a heal button appears only for damaged heroes",
+            str([(h["name"], h["heal"]) for h in heroes]),
+        )
+        bars = await page.evaluate(
+            f"() => [...{DOCK}.querySelectorAll('.dk-bar-fill')].map(b => b.style.width)"
+        )
+        check(bars[:3] == ["45%", "100%", "24%"], "HP bars are proportional", str(bars))
+        classes = await page.evaluate(
+            f"() => [...{DOCK}.querySelectorAll('.dk-bar-fill')].map(b => b.className)"
+        )
+        check("dk-bad" in classes[2], "a badly hurt hero's bar is coloured for it", str(classes[:3]))
+
+        siege = await page.evaluate(
+            f"() => {{ const b = {DOCK}.querySelector('.dk-siege');"
+            "  return b ? {{ text: b.textContent, hidden: b.hidden }} : null; }}".replace("{{", "{").replace("}}", "}")
+        )
+        check(siege is not None and not siege["hidden"], "the siege picker shows when more than one is active", str(siege))
+
+        # Switching the palette off must not take the hero panel with it.
+        check(
+            await page.locator("#seneschal-dock").count() == 1,
+            "hero panel lives in the dock host",
         )
 
         check(not errors, "no uncaught page errors", "; ".join(errors))

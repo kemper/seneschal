@@ -4,7 +4,8 @@
  * One stored object covers everything:
  *
  *   { version, palette: { enabled },
- *              dock: { enabled, side, collapsed, items: [...] } }
+ *              dock:    { enabled, side, collapsed, items: [...] },
+ *              heroes:  { enabled, siege } }
  *
  * Either surface can be switched off entirely — from the toolbar popup or the
  * options page — and both watch storage, so a toggle takes effect in every
@@ -80,6 +81,10 @@
     return {
       version: VERSION,
       palette: { enabled: true },
+      // `siege` is the siege NAME the heal panel acts on, empty meaning "the
+      // first one the page offers". A name, not an id: ids are opaque and the
+      // visible name is the part that survives a patch.
+      heroes: { enabled: true, siege: "" },
       dock: {
         enabled: true,
         side: "right",
@@ -259,6 +264,10 @@
       version: VERSION,
       palette: {
         enabled: raw.palette?.enabled === undefined ? true : Boolean(raw.palette.enabled),
+      },
+      heroes: {
+        enabled: raw.heroes?.enabled === undefined ? true : Boolean(raw.heroes.enabled),
+        siege: typeof raw.heroes?.siege === "string" ? raw.heroes.siege.slice(0, 60) : "",
       },
       dock: {
         enabled: rawDock.enabled === undefined ? base.dock.enabled : Boolean(rawDock.enabled),

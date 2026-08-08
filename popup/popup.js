@@ -13,6 +13,7 @@
   const els = {
     palette: document.getElementById("palette"),
     dock: document.getElementById("dock"),
+    heroes: document.getElementById("heroes"),
     side: document.getElementById("side"),
     options: document.getElementById("options"),
     status: document.getElementById("status"),
@@ -23,6 +24,7 @@
   function paint() {
     els.palette.checked = settings.palette.enabled;
     els.dock.checked = settings.dock.enabled;
+    els.heroes.checked = settings.heroes.enabled;
     els.side.textContent = settings.dock.side === "left" ? "Move to the right" : "Move to the left";
     els.side.disabled = !settings.dock.enabled;
   }
@@ -45,6 +47,11 @@
   els.dock.addEventListener("change", () => {
     settings.dock = { ...settings.dock, enabled: els.dock.checked };
     save(els.dock.checked ? "Quick menu on." : "Quick menu hidden.");
+  });
+
+  els.heroes.addEventListener("change", () => {
+    settings.heroes = { ...settings.heroes, enabled: els.heroes.checked };
+    save(els.heroes.checked ? "Hero panel on." : "Hero panel off.");
   });
 
   els.side.addEventListener("click", () => {

@@ -170,6 +170,56 @@
 }
 .dk-actions .dk-primary { background: #d9a441; border-color: #d9a441; color: #17181b; font-weight: 600; }
 
+/* --- hero panel ---------------------------------------------------------- */
+
+.dk-heroes { display: flex; flex-direction: column; gap: 3px; padding-top: 2px; }
+.dk-heroes[hidden] { display: none; }
+
+.dk-hero { display: flex; align-items: center; gap: 7px; padding: 3px 10px; }
+.dk-left .dk-hero { flex-direction: row-reverse; }
+.dk-hero-name { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dk-hero-hp { flex: none; font-size: 10.5px; color: #7d8798; font-variant-numeric: tabular-nums; }
+
+.dk-bar { height: 3px; border-radius: 2px; background: #2c333f; overflow: hidden; margin: 0 10px 2px; }
+.dk-wrap.dk-collapsed .dk-bar, .dk-wrap.dk-collapsed .dk-hero-name, .dk-wrap.dk-collapsed .dk-hero-hp { display: none; }
+.dk-bar-fill { height: 100%; background: #5fa564; transition: width 180ms ease-out; }
+.dk-bar-fill.dk-hurt { background: #d9a441; }
+.dk-bar-fill.dk-bad { background: #d16a5a; }
+
+/* The heal control is the only thing here that spends anything, so it reads as
+   an action rather than as decoration, and it disappears at full health. */
+.dk-heal {
+  flex: none;
+  border: 1px solid #3c4553;
+  border-radius: 5px;
+  background: #1d2430;
+  color: #cbd2dd;
+  font: inherit;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.dk-heal:hover:not(:disabled) { border-color: #d9a441; color: #f0b750; }
+.dk-heal:disabled { opacity: 0.35; cursor: default; }
+.dk-heal.dk-busy { color: #d9a441; }
+
+.dk-siege {
+  margin: 4px 10px 2px;
+  font-size: 10.5px;
+  color: #7d8798;
+  background: #1a1f28;
+  border: 1px solid #2c333f;
+  border-radius: 5px;
+  padding: 3px 7px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dk-siege:hover { color: #f0b750; border-color: #d9a441; }
+.dk-siege[hidden] { display: none; }
+
 /* --- toast ---------------------------------------------------------------- */
 
 /* Sits BELOW the rail, on the same side, and is a sibling of .dk-wrap rather

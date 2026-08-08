@@ -181,6 +181,30 @@ Settings live in one object under `seneschal.settings.v1` in
 `chrome.storage.local`; both surfaces watch `chrome.storage.onChanged`, so a
 toggle or an edit lands in every open tab without a reload.
 
+## The hero panel
+
+Under the quick menu: every hero's class, name, level and HP, with a bar that
+colours as it drops. Read from `/heroes` with a single GET and parsed out of
+the server-rendered HTML, so it works on any page and mutates nothing.
+
+A **heal button** appears next to a hero only when they are actually hurt.
+Pressing it asks first, then drives the game's own button — in a hidden
+same-origin iframe, so it works from anywhere without navigating you to the
+siege page.
+
+That indirection is deliberate. There is no heal API: the game does its writes
+through Next.js Server Actions, and the button's handler exposes no callable
+reference, so a synthesised request would mean reverse-engineering a payload
+keyed on a build hash that changes with every deploy. Clicking the real button
+needs none of that. Measured: loading the siege page and selecting a location
+issues **33 requests, all GET, and writes nothing to localStorage** — only the
+heal click itself mutates anything.
+
+Afterwards it **re-reads `/heroes` and checks the HP actually moved**, and says
+so loudly if it did not, rather than reporting success because a click didn't
+throw. When more than one siege is active, a small control picks which one the
+heals draw from.
+
 ## Refreshing the destination list
 
 `src/catalog.js` was harvested from the live site on 2026-08-08 and verified
@@ -226,12 +250,13 @@ through. It was a 404 page. **Never infer a path from a label.**
 node --test test/fuzzy.test.mjs     # 12 matcher unit tests
 node --test test/learned.test.mjs   # 11 retention-policy unit tests
 node --test test/config.test.mjs    # 27 settings-model unit tests
+node --test test/heroes.test.mjs    #  8 hero-roster parser unit tests
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 42 checks, the quick menu end to end
+python3 test/dock.py                # 49 checks, quick menu + hero panel
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 133 pass. The Python tests need Playwright; `test/chromium_path.py` locates
+All 141 pass. The Python tests need Playwright; `test/chromium_path.py` locates
 a Chromium on either Linux or macOS, overridable with `SENESCHAL_CHROMIUM`.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the

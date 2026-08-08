@@ -84,6 +84,8 @@
   class Dock {
     constructor() {
       this.settings = SEN.config.defaults();
+      this.heroes = null;   // null = not loaded yet, [] = loaded and empty
+      this.sieges = null;
       this.watcher = null;
       this.toastTimer = null;
       this._build();
@@ -225,6 +227,8 @@
         this.rail.appendChild(empty);
       }
 
+      if (this.settings.heroes?.enabled) this.rail.appendChild(this._heroSection());
+
       const sep = document.createElement("div");
       sep.className = "dk-sep";
       const tools = document.createElement("div");
@@ -236,6 +240,138 @@
       this.rail.append(sep, tools);
 
       if (!this.form.hidden) this._closeForm();
+    }
+
+    // --- hero panel ----------------------------------------------------------
+    /**
+     * HP for every hero, read from /heroes — one GET, works on any page, and
+     * never mutates anything. The heal button is the single exception and is
+     * explicit about it.
+     */
+    _heroSection() {
+      const box = document.createElement("div");
+      box.className = "dk-heroes";
+
+      const sep = document.createElement("div");
+      sep.className = "dk-sep";
+      box.appendChild(sep);
+
+      if (!this.heroes) {
+        const loading = document.createElement("div");
+        loading.className = "dk-hero";
+        loading.append(this._span("dk-icon", "⛑"), this._span("dk-hero-name", "Loading heroes…"));
+        box.appendChild(loading);
+        this._loadHeroes();
+        return box;
+      }
+
+      for (const hero of this.heroes) {
+        const row = document.createElement("div");
+        row.className = "dk-hero";
+        row.append(
+          this._span("dk-icon", hero.icon || "🗡"),
+          this._span("dk-hero-name", hero.name),
+          this._span("dk-hero-hp", `${hero.hp}/${hero.maxHp}`)
+        );
+
+        if (SEN.heroes.isDamaged(hero)) {
+          const heal = document.createElement("button");
+          heal.type = "button";
+          heal.className = "dk-heal";
+          heal.textContent = "⛑";
+          heal.title = `Heal ${hero.name} — spends provisions`;
+          heal.addEventListener("click", () => this._heal(hero, heal));
+          row.appendChild(heal);
+        }
+        box.appendChild(row);
+
+        const bar = document.createElement("div");
+        bar.className = "dk-bar";
+        const fill = document.createElement("div");
+        const frac = SEN.heroes.hpFraction(hero);
+        fill.className = "dk-bar-fill" + (frac < 0.34 ? " dk-bad" : frac < 0.85 ? " dk-hurt" : "");
+        fill.style.width = `${Math.round(frac * 100)}%`;
+        bar.appendChild(fill);
+        box.appendChild(bar);
+      }
+
+      // Which siege the heal acts on. Hidden unless there is a real choice.
+      const siege = document.createElement("button");
+      siege.type = "button";
+      siege.className = "dk-siege";
+      const chosen = this.settings.heroes.siege || this.sieges?.[0] || "";
+      siege.textContent = chosen ? `Heals from: ${chosen.replace(/^The /, "")}` : "";
+      siege.title = "Click to draw heals from a different active siege";
+      siege.hidden = !(this.sieges && this.sieges.length > 1);
+      siege.addEventListener("click", () => this._cycleSiege());
+      box.appendChild(siege);
+
+      return box;
+    }
+
+    async _loadHeroes() {
+      if (this._loadingHeroes) return;
+      this._loadingHeroes = true;
+      try {
+        const [heroes, sieges] = await Promise.all([
+          SEN.heroes.loadHeroes(),
+          SEN.heroes.loadSieges().catch(() => []),
+        ]);
+        this.heroes = heroes;
+        this.sieges = sieges;
+        this.render();
+      } catch (e) {
+        // Quiet on purpose. A failed read here means /heroes moved or we are
+        // not on Wardenfall, and a toast on every page load would be noise.
+        // The loud path is _heal(), where something was actually at stake.
+        console.warn("[Seneschal] could not read heroes:", e);
+        this.heroes = [];
+        this.render();
+      } finally {
+        this._loadingHeroes = false;
+      }
+    }
+
+    /** Rotate through the active sieges; the first is the default. */
+    async _cycleSiege() {
+      if (!this.sieges || this.sieges.length < 2) return;
+      const current = this.settings.heroes.siege || this.sieges[0];
+      const next = this.sieges[(this.sieges.indexOf(current) + 1) % this.sieges.length];
+      this.settings = { ...this.settings, heroes: { ...this.settings.heroes, siege: next } };
+      this.render();
+      await store.set(SEN.config.STORAGE_KEY, this.settings);
+      this.toast(`Heals now draw from ${next}.`);
+    }
+
+    /**
+     * The only thing in the extension that spends anything, so it asks first,
+     * says exactly what it cost, and VERIFIES against the server rather than
+     * assuming the click worked.
+     */
+    async _heal(hero, button) {
+      const siege = this.settings.heroes.siege || this.sieges?.[0] || "";
+      const where = siege ? ` on ${siege}` : "";
+      if (!confirm(`Heal ${hero.name} (${hero.hp}/${hero.maxHp})${where}?\n\nThis spends provisions.`)) return;
+
+      button.disabled = true;
+      button.classList.add("dk-busy");
+      try {
+        const out = await SEN.heroes.heal({ heroName: hero.name, siege });
+        if (out.healed) {
+          this.toast(`${hero.name}: ${out.before} → ${out.after}/${out.maxHp}. ${out.cost || ""}`.trim());
+        } else {
+          // Loud: a click that changed nothing means the button moved, the
+          // siege ended, or the server refused.
+          this.toast(`Heal did not take — ${hero.name} is still ${out.before}/${out.maxHp}.`, true);
+        }
+      } catch (e) {
+        console.warn("[Seneschal] heal failed:", e);
+        this.toast(`Could not heal ${hero.name}: ${e.message}`, true);
+      } finally {
+        button.classList.remove("dk-busy");
+        this.heroes = null; // force a fresh read
+        this._loadHeroes();
+      }
     }
 
     _span(className, text) {

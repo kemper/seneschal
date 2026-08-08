@@ -17,6 +17,7 @@
   const els = {
     paletteEnabled: document.getElementById("palette-enabled"),
     enabled: document.getElementById("enabled"),
+    heroesEnabled: document.getElementById("heroes-enabled"),
     sides: [...document.querySelectorAll('input[name="side"]')],
     items: document.getElementById("items"),
     add: document.getElementById("add"),
@@ -75,6 +76,7 @@
   function renderAll() {
     els.paletteEnabled.checked = state.palette.enabled;
     els.enabled.checked = state.dock.enabled;
+    els.heroesEnabled.checked = state.heroes.enabled;
     for (const radio of els.sides) radio.checked = radio.value === state.dock.side;
     renderItems();
     els.json.value = JSON.stringify(state, null, 2);
@@ -223,6 +225,12 @@
     state.palette.enabled = els.paletteEnabled.checked;
     els.json.value = JSON.stringify(state, null, 2);
     save(state.palette.enabled ? "Command palette on." : "Command palette off.");
+  });
+
+  els.heroesEnabled.addEventListener("change", () => {
+    state.heroes.enabled = els.heroesEnabled.checked;
+    els.json.value = JSON.stringify(state, null, 2);
+    save(state.heroes.enabled ? "Hero panel on." : "Hero panel off.");
   });
 
   els.enabled.addEventListener("change", () => {

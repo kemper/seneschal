@@ -1,0 +1,232 @@
+/**
+ * heroes.js — hero roster, HP, and the heal driver.
+ *
+ * TWO HALVES, VERY DIFFERENT RISK PROFILES.
+ *
+ * Reading is free: `/heroes` is server-rendered and carries every hero's
+ * name, class icon, level and current/max HP. One GET, parsed out of the HTML,
+ * works from any page. The parsers here are pure so they can be unit tested
+ * without a browser (test/heroes.test.mjs).
+ *
+ * Healing SPENDS RESOURCES, and there is no API for it. Measured on the live
+ * site: the game drives mutations through Next.js Server Actions
+ * (createServerReference x33, callServer x50) and the only /api/* routes are
+ * peripheral reads — pending-count, unread-count, news, chat, logout. The heal
+ * button's onClick is a plain closure with no exposed action reference, so
+ * there is nothing to call directly, and a hand-built Next-Action POST would
+ * depend on a per-build hash that changes with every deploy — daily, for this
+ * game.
+ *
+ * So we drive the game's OWN button, in a hidden same-origin iframe. Measured:
+ * loading /conquest and selecting a siege location issues only GETs (33 of
+ * them, zero POSTs) and writes nothing to localStorage, so getting to the
+ * button costs nothing and cannot disturb the page you are looking at. The
+ * only mutation is the heal click itself, which is the thing you asked for.
+ *
+ * The handle we click by is `title="Heal <Name> for 4 <Resource>"` — visible,
+ * human-readable text, which is the part of this game that survives. Never a
+ * class name.
+ */
+(function () {
+  "use strict";
+
+  const SEN = (globalThis.SEN = globalThis.SEN || {});
+
+  const HEROES_PATH = "/heroes";
+  const CONQUEST_PATH = "/conquest";
+  const FRAME_LOAD_MS = 20000;
+  const SETTLE_MS = 2500; // React hydration inside the frame
+  const STEP_MS = 2000;
+
+  // --- parsing (pure) -------------------------------------------------------
+
+  /**
+   * Pull the roster out of /heroes' rendered text.
+   *
+   * The page prints the same heroes twice, in two different shapes, and we
+   * need both: a roster row carrying the class icon and level
+   * ("● 🔮 Krogdolf Lv50"), and an HP row carrying current/max
+   * ("Heroes Krogdolf 489/489 · Krogloff 459/459"). Joined on name.
+   *
+   * @param {string} text  document.body.textContent, whitespace-collapsed
+   * @returns {Array<{name,icon,level,hp,maxHp}>}
+   */
+  function parseHeroes(text) {
+    const flat = String(text || "").replace(/\s+/g, " ");
+
+    const meta = new Map();
+    // Icon is optional: if the game drops the emoji, we still get name+level.
+    for (const m of flat.matchAll(/(\p{Extended_Pictographic}️?)?\s*([A-Z][A-Za-z']{1,19})\s+Lv(\d{1,3})\b/gu)) {
+      if (!meta.has(m[2])) meta.set(m[2], { icon: m[1] || "", level: Number(m[3]) });
+    }
+
+    const hp = new Map();
+    for (const m of flat.matchAll(/([A-Z][A-Za-z']{1,19})\s+(\d{1,5})\s*\/\s*(\d{1,5})/g)) {
+      const cur = Number(m[2]);
+      const max = Number(m[3]);
+      // A ratio is only an HP reading if it is plausible: max must be positive
+      // and current must not exceed it. This rejects "900/70"-style pairs that
+      // appear elsewhere on the page.
+      if (max > 0 && cur <= max && !hp.has(m[1])) hp.set(m[1], { hp: cur, maxHp: max });
+    }
+
+    const out = [];
+    for (const [name, h] of hp) {
+      const m = meta.get(name);
+      out.push({ name, icon: m ? m.icon : "", level: m ? m.level : null, hp: h.hp, maxHp: h.maxHp });
+    }
+    return out;
+  }
+
+  /** Siege names as the page shows them, e.g. "The Ashvale Bulwark". */
+  function parseSieges(text) {
+    const flat = String(text || "").replace(/\s+/g, " ");
+    return [...new Set((flat.match(/The [A-Z][A-Za-z]+ Bulwark/g) || []))];
+  }
+
+  /** Fraction of max HP remaining, clamped. Used for the bar and its colour. */
+  function hpFraction(hero) {
+    if (!hero || !hero.maxHp) return 0;
+    return Math.max(0, Math.min(1, hero.hp / hero.maxHp));
+  }
+
+  function isDamaged(hero) {
+    return Boolean(hero && hero.maxHp && hero.hp < hero.maxHp);
+  }
+
+  // --- reading (network, read-only) ----------------------------------------
+
+  async function fetchText(path) {
+    const res = await fetch(path, { credentials: "include" });
+    if (!res.ok) throw new Error(`${path} returned ${res.status}`);
+    return res.text();
+  }
+
+  function textOf(html) {
+    return new DOMParser().parseFromString(html, "text/html").body.textContent || "";
+  }
+
+  async function loadHeroes() {
+    return parseHeroes(textOf(await fetchText(HEROES_PATH)));
+  }
+
+  async function loadSieges() {
+    return parseSieges(textOf(await fetchText(CONQUEST_PATH)));
+  }
+
+  // --- healing (the only mutating path) ------------------------------------
+
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function openFrame(path) {
+    const frame = document.createElement("div");
+    frame.setAttribute("data-seneschal", "frame"); // never indexed by the scanner
+    const el = document.createElement("iframe");
+    // Off-screen rather than display:none — a hidden frame can skip layout,
+    // and the game's own click handlers want a laid-out document.
+    el.style.cssText = "position:fixed;left:-10000px;top:0;width:1200px;height:900px;opacity:0;border:0";
+    el.setAttribute("aria-hidden", "true");
+    el.setAttribute("tabindex", "-1");
+    el.src = path;
+    frame.appendChild(el);
+    document.documentElement.appendChild(frame);
+
+    const ready = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("the siege page did not load in time")), FRAME_LOAD_MS);
+      el.addEventListener("load", () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
+    return { host: frame, el, ready, close: () => frame.remove() };
+  }
+
+  const visibleText = (el) => (el.textContent || "").replace(/\s+/g, " ").trim();
+
+  /**
+   * Anything that commits an assault. We only ever click a siege name, a
+   * location, and a Heal button — but the guard is here so that a future edit,
+   * or a game that renames a location to something unfortunate, cannot turn
+   * this into an attack.
+   */
+  const COMMITTING = /lay siege|all in|storm|assault now|attack now|confirm/i;
+
+  function clickByText(doc, matcher, what) {
+    const btn = [...doc.querySelectorAll("button, a[href]")].find((b) => matcher(visibleText(b)));
+    if (!btn) throw new Error(`could not find ${what}`);
+    if (COMMITTING.test(visibleText(btn))) throw new Error(`refusing to click "${visibleText(btn)}" — that commits an assault`);
+    if (btn.disabled) throw new Error(`${what} is disabled`);
+    btn.click();
+    return btn;
+  }
+
+  /**
+   * Heal one hero from anywhere, by driving the game's own button in a hidden
+   * frame. Resolves with the HP before and after, read back from /heroes, so
+   * the caller can prove it worked rather than assume it.
+   *
+   * @param {{heroName:string, siege?:string}} opts
+   */
+  async function heal({ heroName, siege }) {
+    if (!heroName) throw new Error("no hero given");
+
+    const before = (await loadHeroes()).find((h) => h.name === heroName);
+    if (!before) throw new Error(`${heroName} is not in the roster`);
+    if (!isDamaged(before)) throw new Error(`${heroName} is already at full health`);
+
+    const frame = openFrame(CONQUEST_PATH);
+    try {
+      await frame.ready;
+      await wait(SETTLE_MS);
+      const doc = frame.el.contentDocument;
+      if (!doc) throw new Error("could not reach the siege page");
+
+      // Optional: switch to a named siege before picking a location.
+      if (siege) {
+        const found = [...doc.querySelectorAll("button, a[href]")].find((b) => visibleText(b).includes(siege));
+        if (found && !COMMITTING.test(visibleText(found))) {
+          found.click();
+          await wait(STEP_MS);
+        }
+      }
+
+      // A location has to be selected before the provisions panel exists. This
+      // is client-side only — measured: no request, no storage write — and it
+      // happens in a throwaway document, so it cannot change what you have
+      // selected on screen.
+      const target = [...doc.querySelectorAll("button")].find(
+        (b) => /The (Gate|West Wall|East Wall|Postern|Yard|Inner Wall|Keep|Regent)/i.test(visibleText(b))
+          && !COMMITTING.test(visibleText(b))
+      );
+      if (!target) throw new Error("no siege location to select — is a siege actually active?");
+      target.click();
+      await wait(STEP_MS);
+
+      const healBtn = [...doc.querySelectorAll("button[title]")].find((b) =>
+        new RegExp(`^Heal\\s+${heroName}\\b`, "i").test(b.getAttribute("title") || "")
+      );
+      if (!healBtn) throw new Error(`no heal button for ${heroName} on this siege`);
+      if (healBtn.disabled) throw new Error(`the heal button for ${heroName} is disabled`);
+
+      const cost = healBtn.getAttribute("title");
+      healBtn.click();
+      await wait(STEP_MS);
+
+      // Verify against the server rather than trusting the click.
+      const after = (await loadHeroes()).find((h) => h.name === heroName);
+      const healed = after && after.hp > before.hp;
+      return { healed, cost, before: before.hp, after: after ? after.hp : null, maxHp: before.maxHp };
+    } finally {
+      frame.close();
+    }
+  }
+
+  SEN.heroes = {
+    parseHeroes,
+    parseSieges,
+    hpFraction,
+    isDamaged,
+    loadHeroes,
+    loadSieges,
+    heal,
+    HEROES_PATH,
+    CONQUEST_PATH,
+  };
+})();
