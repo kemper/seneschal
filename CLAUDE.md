@@ -13,19 +13,24 @@ it is a full bearer credential.
 
 ## Findings that cost real effort to get — don't rediscover them
 
-**1. The game's sub-navigation is CONTEXTUAL.** Only six labels appear on every
-page (`REALM · EXPEDITIONS · CHAMPIONS · INVENTORY · LORE · RANKINGS`).
-`BUILDINGS`, `MARKET`, `DELVE`, `ARENA`, `🐗 HUNT`, `🛠 CRAFTABLES` render only
-once you are inside their parent door. Measured by diffing six captures of the
-live page: six labels at 6/6, everything else 1/6–4/6. **No single page shows the
-whole nav**, which is why `tools/harvest-nav.js` walks the doors and why the
-palette merges three sources instead of scanning one header.
+**1. The game's sub-navigation is CONTEXTUAL.** Confirmed against the live
+site on 2026-08-08 by fetching all 19 reachable nav pages: of **35** distinct
+entries, exactly **six** appear on every page (`REALM · EXPEDITIONS ·
+CHAMPIONS · INVENTORY · LORE · RANKINGS`). Everything else is 8/19 (the
+Expeditions row), 5/19 (the Realm row), or 2/19 and below. **No single page
+shows the whole nav**, which is why the palette merges three sources instead of
+scanning one header.
 
-**2. Navigate by CLICKING a real element, never `location.href`.** The game is a
-client-routed SPA, and `/buildings` is reported to render near-empty on a hard
-load while painting correctly when reached via the nav link. That report is
-second-hand and unverified — but clicking costs nothing and doesn't depend on it
-being true. `location.assign` is the fallback only.
+**2. Prefer CLICKING a real element, but the old reason for it was WRONG.**
+The story was that `/buildings` "renders near-empty on a hard load". Measured:
+`/buildings` returns **404**. So do `/lore`, `/inventory` and `/craftables` —
+all four were invented by the pre-harvest catalog and none is a real route.
+The near-empty page was a 404 shell. The real paths are `/expeditions/buildings`,
+`/quests`, `/expeditions/inventory` and
+`/expeditions/buildings/craftables`. Clicking a live anchor is still preferred
+(it keeps the router's state and costs nothing), but `location.assign` to a
+**harvested** path is fine — the thing to distrust is a guessed URL, not a hard
+load. **Never infer a path from a label.**
 
 **3. The game changes absurdly fast** — on the order of a shipped release per
 day, and it reorganised its entire navigation in v1.96. **Design so failures are
@@ -89,13 +94,18 @@ pattern. `test/dock.py` holds that line. Don't "fix" it into a silent no-op.
 ```bash
 node --test test/fuzzy.test.mjs     # 12
 node --test test/learned.test.mjs   # 11
-node --test test/config.test.mjs    # 26
+node --test test/config.test.mjs    # 27
 python3 test/e2e.py                 # 26
-python3 test/dock.py                # 40
+python3 test/dock.py                # 42
 python3 test/harvest.py             # 15
 ```
 
-130 checks. Keep them passing.
+133 checks. Keep them passing.
+
+The Python tests need Playwright. There is a local `.venv` (gitignored):
+`.venv/bin/python3 test/dock.py`. `test/chromium_path.py` finds a Chromium
+across the cloud container and a Mac; override with `SENESCHAL_CHROMIUM`.
+Never run `playwright install` in the container.
 
 `test/dock.py` drives the options page and the toolbar popup as real
 extension pages (get the id from `ctx.service_workers[0].url`), which is also
@@ -108,17 +118,15 @@ Two gotchas already solved — don't re-hit them:
 - `node --test <dir>` needs an explicit file path in some environments; pass the
   file.
 
-Chromium for tests lives at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
-Never run `playwright install`. Launch with `--no-sandbox
---disable-setuid-sandbox --disable-quic --no-proxy-server`.
+Launch Chromium with `--no-sandbox --disable-setuid-sandbox --disable-quic
+--no-proxy-server`.
 
 ## Open work, in priority order
 
-**1. Harvest the real destination list.** `src/catalog.js` was written from
-captured page text without live-site access, and it shows: **11 of its 23 entries
-have no path at all**, and `/lore` and `/inventory` are inferred. Ask the user to
-open wardenfall.com, paste `tools/harvest-nav.js` into DevTools, and hand back
-what it prints; paste that over the array in `catalog.js`.
+**1. ~~Harvest the real destination list.~~ DONE 2026-08-08.** `src/catalog.js`
+now holds all 35 live entries with real paths and real groups, verified
+35/35 with a zero diff. `tools/harvest-nav.js` regenerates it and reports
+"n gone, n new, n moved" against what is shipped.
 
 **0. Settings live in one object**, `seneschal.settings.v1` in
 `chrome.storage.local`: `{ palette: {enabled}, dock: {enabled, side, collapsed,
@@ -135,9 +143,14 @@ and collapsing `scanner.js` to a single find-anchor-for-path helper, removes
 and click-then-navigate activation. This was offered and **not yet decided** —
 confirm before ripping it out.
 
-**3. A harvester diff mode** was proposed and not built: have `harvest-nav.js`
-compare what it found against the shipped catalog and report "3 gone, 2 new,
-1 moved" instead of a blind regenerate. ~15 lines, dev-time only.
+**3. ~~A harvester diff mode.~~ DONE.** `harvest-nav.js` diffs against
+`SEN.catalog` when the extension is loaded on the page.
+
+**3b. A label can carry live state.** `MESSAGES` renders as "Messages 153" —
+the unread count is IN the label. The harvester strips a trailing number and
+keys entries on the stable form; getting this wrong made every run report
+Messages as both gone and new. Anything that matches or dedupes on a visible
+label must assume the label can move.
 
 **4. Arena sound effects — deliberately NOT in this repo yet.** The user wants
 spell sounds, bow twangs, hit grunts, death cries. Playing audio is trivial;
@@ -155,8 +168,24 @@ explicit yes rather than sliding into it.
 
 ## Live-site access
 
-There is no automated login here. All live-site work goes through DevTools
-scripts the user pastes and reports back — design tooling for that.
+Two routes, in order of preference:
+
+**1. `claude --chrome` from a LOCAL session.** Claude Code drives the real
+browser through the Claude in Chrome extension, with the user's existing login.
+This is how the 2026-08-08 harvest was done. It needs a local CLI — the
+integration runs over Chrome **native messaging**, which is machine-local by
+construction, so a cloud session can never reach it. Teleport first
+(`claude --teleport <session-id>`), then `/chrome`.
+
+**2. DevTools scripts the user pastes and reports back** — design tooling for
+that when no browser is attached.
+
+**Do NOT drive the live site by clicking.** A click is a real navigation, which
+destroys the JS execution context and kills any in-page script mid-walk
+("Inspected target navigated or closed"). This is what made the first harvester
+fail in practice. **`fetch` + `DOMParser` instead**: the game server-renders its
+nav, the session cookie rides along automatically, nothing navigates, and it
+cannot be interrupted. Also far faster. Same rule for any future recon.
 
 If a pasted script mysteriously no-ops on the live site, **check for an open
 `role="dialog"` modal first**: the game's hero level-40 ascension whisper

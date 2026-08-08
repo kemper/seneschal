@@ -25,11 +25,11 @@ import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from chromium_path import CHROMIUM  # noqa: E402
 from playwright.async_api import async_playwright  # noqa: E402
 
 EXT = Path(__file__).resolve().parents[1]
 FIXTURE = EXT / "test" / "fixture"
-CHROMIUM = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
 
 results: list[tuple[bool, str]] = []
 
@@ -124,22 +124,10 @@ async def main() -> int:
         )
         check("dk-right" in await wrap_class(), "dock defaults to the right edge")
 
-        # --- a menu entry already on the page --------------------------------
-        # CRAFTABLES is in the current sub-nav, rendered as "🛠 CRAFTABLES ●";
-        # the pattern is the bare word, so folding has to do the work. Done
-        # first because it leaves the realm sub-nav row in place.
-        check(await click_entry("Craftables"), "Craftables entry is clickable")
-        await page.wait_for_timeout(250)
-        check(
-            await log() == "navigated:/craftables",
-            "menu entry matches a decorated label on the current page",
-            f"log={await log()!r}",
-        )
-
         # --- a url entry clicks the live anchor ------------------------------
         # MILITARY is in the realm sub-nav right now, so this must be served by
         # clicking that anchor rather than by navigating to /military.
-        await click_entry("Military")
+        check(await click_entry("Military"), "Military entry is clickable")
         await page.wait_for_timeout(250)
         check(
             await log() == "navigated:/military",
@@ -156,6 +144,53 @@ async def main() -> int:
             f"log={await log()!r}",
         )
 
+        # --- menu entries ----------------------------------------------------
+        # The shipped defaults are all `url` entries now that the nav harvest
+        # found real paths for them, so the pattern behaviour gets its own
+        # config rather than riding on whatever the defaults happen to be.
+        worker = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
+        ext_id = worker.url.split("/")[2]
+        options = await ctx.new_page()
+        await options.goto(f"chrome-extension://{ext_id}/options/options.html", wait_until="load")
+        await options.wait_for_timeout(300)
+
+        async def install(items: list[dict], note: str = "") -> None:
+            await options.evaluate(
+                """async (items) => {
+                    const key = 'seneschal.settings.v1';
+                    const cfg = (await chrome.storage.local.get(key))[key]
+                                ?? { version: 1, palette: { enabled: true },
+                                     dock: { enabled: true, side: 'right', collapsed: false, items: [] } };
+                    cfg.dock.items = items;
+                    await chrome.storage.local.set({ [key]: cfg });
+                }""",
+                items,
+            )
+            await page.bring_to_front()
+            await page.wait_for_timeout(400)
+
+        await install([
+            {"id": "t-craft", "icon": "🛠", "label": "Craftables", "type": "menu", "match": "craftables"},
+            {"id": "t-arena", "icon": "⚔", "label": "Arena", "type": "menu", "match": "arena",
+             "door": "/expeditions"},
+            {"id": "t-mil", "icon": "🪖", "label": "Military", "type": "url", "path": "/military"},
+        ])
+        check(await labels() == ["Craftables", "Arena", "Military"], "test menu installed", str(await labels()))
+
+        # Put the fixture back on the realm door so its sub-nav row is showing.
+        await page.evaluate("() => document.querySelector(\"header a[href='/empire']\").click()")
+        await page.wait_for_timeout(250)
+
+        # CRAFTABLES is in the current sub-nav, rendered as "🛠 CRAFTABLES ●";
+        # the pattern is the bare word, so folding has to do the work.
+        await click_entry("Craftables")
+        await page.wait_for_timeout(250)
+        check(
+            await log() == "navigated:/craftables",
+            "menu entry matches a decorated label on the current page",
+            f"log={await log()!r}",
+        )
+
         # --- a menu entry behind its door ------------------------------------
         absent = await page.evaluate("() => !document.querySelector(\"a[href='/arena']\")")
         check(absent, "ARENA really is absent before the walk")
@@ -169,6 +204,22 @@ async def main() -> int:
         )
         pending = await page.evaluate("() => sessionStorage.getItem('seneschal.pending.v1')")
         check(pending is None, "the pending click is cleared once it lands", str(pending))
+
+        # Back to the shipped defaults for the rest of the run.
+        await options.evaluate(
+            """async () => {
+                const key = 'seneschal.settings.v1';
+                await chrome.storage.local.remove(key);
+            }"""
+        )
+        await page.bring_to_front()
+        await page.reload(wait_until="load")
+        await page.wait_for_timeout(700)
+        check(
+            await labels() == ["Champions", "Raids", "Sieges", "Arena", "Craftables", "Military"],
+            "clearing storage restores the shipped defaults",
+            str(await labels()),
+        )
 
         # --- collapse --------------------------------------------------------
         await page.evaluate(f"() => {DOCK}.querySelector('.dk-tab').click()")
@@ -258,11 +309,9 @@ async def main() -> int:
         await page.keyboard.press("Escape")
 
         # --- the options page edits the live dock ----------------------------
-        worker = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
-        ext_id = worker.url.split("/")[2]
-        options = await ctx.new_page()
-        await options.goto(f"chrome-extension://{ext_id}/options/options.html", wait_until="load")
-        await options.wait_for_timeout(300)
+        await options.bring_to_front()
+        await options.reload(wait_until="load")
+        await options.wait_for_timeout(400)
 
         rows = await options.locator(".item").count()
         check(rows == len(await labels()), "options page lists the same entries as the rail", f"{rows} rows")

@@ -216,11 +216,24 @@ test("a saved config round-trips through JSON unchanged", () => {
   assert.equal(JSON.stringify(second), JSON.stringify(first));
 });
 
-test("the default menu is itself valid, and exercises both entry kinds", () => {
+test("every default entry is valid", () => {
+  // Deliberately does NOT assert which KINDS the defaults use. They were all
+  // `menu` patterns until the nav harvest found real paths, and pinning the
+  // mix here would make a data improvement look like a test failure. Both
+  // kinds are covered by the validateItem tests above.
   const { items } = CFG.defaults().dock;
   for (const item of items) {
     assert.equal(CFG.validateItem(item).ok, true, `default entry ${item.label} is invalid`);
   }
-  assert.ok(items.some((i) => i.type === "url"));
-  assert.ok(items.some((i) => i.type === "menu" && i.door));
+  assert.ok(items.length > 0);
+});
+
+test("the default paths are the harvested ones, not the guessable ones", () => {
+  // /buildings, /lore, /inventory and /craftables were all invented by the
+  // pre-harvest catalog and all return 404 on the live site. If someone
+  // "tidies" a path back to its obvious-looking form, this fails.
+  const byLabel = Object.fromEntries(CFG.defaults().dock.items.map((i) => [i.label, i.path]));
+  assert.equal(byLabel.Sieges, "/conquest", "Sieges is /conquest, not /sieges");
+  assert.equal(byLabel.Craftables, "/expeditions/buildings/craftables");
+  assert.equal(byLabel.Champions, "/heroes");
 });

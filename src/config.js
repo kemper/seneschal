@@ -57,30 +57,22 @@
   /**
    * The out-of-the-box menu, as requested.
    *
-   * The kind chosen for each entry mirrors what is actually known about that
-   * destination in catalog.js, which is the honest thing to do:
+   * Every one of these is a `url` entry, because the nav harvest of 2026-08-08
+   * found a real path for all six. The earlier build shipped four of them as
+   * `menu` patterns purely because catalog.js did not know their URLs — which
+   * was a gap in our data, never a property of the game. One hop beats two.
    *
-   *   CHAMPIONS and MILITARY have paths that came from captured page text, so
-   *   they are `url` entries — one hop, and they still prefer clicking a live
-   *   anchor when one is on screen.
-   *
-   *   ARENA, SIEGES and CRAFTABLES have no path in the catalog. They almost
-   *   certainly HAVE one on the live site — we just have not harvested it —
-   *   so a `menu` entry is the placeholder that works today. Once
-   *   tools/harvest-nav.js has been run against the real site, promoting them
-   *   to `url` entries is the better answer.
-   *
-   *   RAIDS appears in the catalog only as a KEYWORD for Expeditions, never as
-   *   a nav entry of its own, so this one is a guess. If the label is wrong,
-   *   the door gets walked and then a warning names the pattern that missed —
-   *   which is the whole reason failures here are loud.
+   * Two of these paths are ones you would not guess, which is exactly why they
+   * were harvested rather than inferred: SIEGES is /conquest, and CRAFTABLES
+   * is three levels deep at /expeditions/buildings/craftables. RAIDS is the
+   * Expeditions door's own first sub-entry, so it points back at /expeditions.
    */
   const DEFAULT_ITEMS = [
     { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
-    { id: "seed-raids", icon: "🏴", label: "Raids", type: "menu", match: "raids", door: "/expeditions" },
-    { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "menu", match: "sieges", door: "/expeditions" },
-    { id: "seed-arena", icon: "⚔️", label: "Arena", type: "menu", match: "arena", door: "/expeditions" },
-    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/empire" },
+    { id: "seed-raids", icon: "🏴", label: "Raids", type: "url", path: "/expeditions" },
+    { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "url", path: "/conquest" },
+    { id: "seed-arena", icon: "⚔️", label: "Arena", type: "url", path: "/arena" },
+    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
     { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
   ];
 

@@ -46,7 +46,12 @@ So the index draws on three sources, most-trusted first:
 1. **Live scan** of the header right now (`src/scanner.js`).
 2. **Learned entries** — every nav item ever seen in a header, persisted to
    `chrome.storage.local`. Browsing naturally teaches it the whole tree.
-3. **Seed catalog** (`src/catalog.js`) so it is useful on a fresh install.
+3. **Seed catalog** (`src/catalog.js`) — all 35 live destinations, harvested
+   from the site itself, so it is complete on a fresh install.
+
+How contextual is contextual? Measured across all 19 reachable nav pages: of
+35 distinct entries, exactly **six** are on every page. The rest are 8/19, 5/19,
+or lower.
 
 **With an empty query the list is your history** — everything you have jumped
 to before, most recent first, under a `Recent` heading, with everything else
@@ -113,13 +118,12 @@ are already inside their parent door. The honest description of the journey is
 entry stores.
 
 **Prefer a path when you know it.** Most of these destinations do have a URL —
-a *Menu entry* is not a claim that one does not exist. It is the right choice
-in four cases:
+a *Menu entry* is not a claim that one does not exist. Since the harvest, every
+entry in `src/catalog.js` has a real path, and the default quick menu is
+entirely path entries. A *Menu entry* is the right choice in four narrower
+cases:
 
-- **The URL is not known yet.** 11 of the 23 entries in `src/catalog.js` have
-  no path, because the catalog was written from captured page text rather than
-  from the live site. Run `tools/harvest-nav.js` and most of those can become
-  plain path entries.
+- **The URL is not known yet**, for something the harvester has not reached.
 - **The route misbehaves on a hard load,** as `/buildings` is reported to.
   (Second-hand and unverified — but clicking through costs nothing.)
 - **The control genuinely has no href.** A dropdown toggle like the user menu
@@ -179,36 +183,56 @@ toggle or an edit lands in every open tab without a reload.
 
 ## Refreshing the destination list
 
-`src/catalog.js` was written from captured page text, not from the live site, so
-several entries have **no path at all** and a couple are inferred. Fix that in
-about ten seconds:
+`src/catalog.js` was harvested from the live site on 2026-08-08 and verified
+against it with a zero diff. To refresh after a patch reshuffles the nav:
 
 1. Open wardenfall.com and log in.
 2. Paste `tools/harvest-nav.js` into the DevTools console.
 3. Paste what it prints over the array in `src/catalog.js`.
 
-It clicks each nav link, waits for the row to re-render, records what appeared,
-and puts you back where you started. Navigation only — it never triggers a game
-action, spends a turn, or submits a form. It refuses to run if a modal is open,
-because a full-screen overlay swallows every click and would otherwise produce
-a misleadingly short list.
+It **fetches** each nav page and parses the HTML — it does not click. The game
+server-renders its navigation, your session cookie rides along automatically,
+and nothing on your screen changes. That is not a stylistic choice: clicking
+triggers a real navigation, which destroys the console's execution context and
+kills the script mid-walk. The click walk is still there as a fallback if the
+game ever moves to client-side rendering.
 
-Re-run it whenever a patch reshuffles the nav. This is the deliberate trade: a
-manual refresh every month or so, instead of runtime machinery that tries to
-keep up on its own.
+GET requests to navigation URLs only. It never posts, submits a form, triggers
+a game action, or spends a turn. It also **diffs against the shipped catalog**
+and reports "n gone, n new, n moved" rather than making you eyeball a
+regenerate.
+
+### What the first harvest found
+
+The pre-harvest catalog had been written from captured page text, and four of
+its paths were invented — `/buildings`, `/lore`, `/inventory` and `/craftables`
+all return **404**. The real ones are not guessable from the label:
+
+| Entry | Guessed | Actually |
+| --- | --- | --- |
+| Lore | `/lore` | `/quests` |
+| Inventory | `/inventory` | `/expeditions/inventory` |
+| Buildings | `/buildings` | `/expeditions/buildings` |
+| Craftables | `/craftables` | `/expeditions/buildings/craftables` |
+| Sieges | — | `/conquest` |
+
+This also retired a piece of folklore: `/buildings` was said to "render
+near-empty on a hard load", which was taken as evidence the SPA needed clicking
+through. It was a 404 page. **Never infer a path from a label.**
 
 ## Tests
 
 ```bash
 node --test test/fuzzy.test.mjs     # 12 matcher unit tests
 node --test test/learned.test.mjs   # 11 retention-policy unit tests
-node --test test/config.test.mjs    # 26 settings-model unit tests
+node --test test/config.test.mjs    # 27 settings-model unit tests
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 40 checks, the quick menu end to end
+python3 test/dock.py                # 42 checks, the quick menu end to end
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 130 pass.
+All 133 pass. The Python tests need Playwright; `test/chromium_path.py` locates
+a Chromium on either Linux or macOS, overridable with `SENESCHAL_CHROMIUM`.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the
 unpacked extension with `--load-extension`, and drives it exactly as a user
