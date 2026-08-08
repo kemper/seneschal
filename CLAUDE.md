@@ -102,6 +102,29 @@ with class icon and level (`● 🔮 Krogdolf Lv50`) and an HP row with current/
 (`Power 900/70`, `Morale 100/85`); the parser rejects them by requiring
 `current <= max`.
 
+**14. Healing has TWO separate systems — don't conflate them.**
+  - *Siege provisions*: the assault panel's `⛑` button, `title="Heal <Name> for
+    4 <Resource>"`, class-specific currency, only inside a siege.
+  - *Elixirs*: craftable consumables on `/expeditions/buildings/craftables`,
+    used via a `USE ON HERO` button. Measured 2026-08-08:
+
+    | Elixir | Mends | Cost | Held |
+    | --- | --- | --- | --- |
+    | 🧪 Salveroot Tonic | +10 HP | 6 timber + 2 iron | 0 |
+    | 🍵 Knitbone Draught | +25 HP | 12 timber + 6 iron | 0 |
+    | 💧 Wardenbalm Elixir | +50 HP | 2 wardenstone + 2 Warden-Resin | 1 |
+
+    Wardenbalm also rouses a gravely-wounded champion to march at once.
+    Craftables page buttons: `CRAFT · SMELT · USE ON HERO · USE VIAL · TRADE ·
+    REFINE · BUY`. **There is NO "heal all" button** — searched, none exists.
+    Building one means crafting n elixirs then using each, which spends real
+    resources and must show a preview before it runs.
+
+**15. Heal and "use" controls only render when a hero is DAMAGED.** With a full
+roster the buttons are `disabled` (siege panel) or absent (elixirs), which is
+why several recon passes came back empty. Plan recon for a moment when someone
+is actually hurt.
+
 ## Working agreements
 
 - **Verify in a browser; do not trust reading.** Every bug so far was caught by

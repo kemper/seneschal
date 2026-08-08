@@ -30,6 +30,11 @@
   // The game re-renders its sub-nav row asynchronously; six seconds is far
   // longer than it has ever taken, and failing at all is meant to be visible.
   const RESOLVE_MS = 6000;
+  // Every in-game navigation is a full page load, so the content script starts
+  // from nothing each time. Without a cache the hero panel would flash a
+  // placeholder on every single page — so the last known roster is shown
+  // immediately, dimmed, while a fresh read lands underneath it.
+  const HEROES_KEY = "seneschal.heroes.v1";
   const PENDING_KEY = "seneschal.pending.v1";
   // A confirmation has done its job the moment you have read it. A warning is
   // the whole point of the loud-failure design, so it lingers.
@@ -84,8 +89,9 @@
   class Dock {
     constructor() {
       this.settings = SEN.config.defaults();
-      this.heroes = null;   // null = not loaded yet, [] = loaded and empty
+      this.heroes = null;   // null = nothing known yet, [] = read and empty
       this.sieges = null;
+      this.refreshing = false;
       this.watcher = null;
       this.toastTimer = null;
       this._build();
@@ -105,14 +111,31 @@
       try {
         chrome.storage.onChanged.addListener((changes, area) => {
           if (area !== "local" || !changes[SEN.config.STORAGE_KEY]) return;
+          const wasOn = this.settings.heroes?.enabled;
           this.settings = SEN.config.normalize(changes[SEN.config.STORAGE_KEY].newValue).config;
           this.render();
+          if (!wasOn && this.settings.heroes?.enabled) this._refreshHeroes();
         });
       } catch {
         /* no live sync; a reload still picks up changes */
       }
 
       this._resumePending();
+
+      // Cache first so the panel paints with real data, then a live read.
+      if (this.settings.heroes?.enabled) {
+        await this._hydrateHeroes();
+        this.render();
+        this._refreshHeroes();
+      }
+    }
+
+    /** Adopt the last known roster so the first paint is never a placeholder. */
+    async _hydrateHeroes() {
+      const cached = await store.get(HEROES_KEY, null);
+      if (!cached || !Array.isArray(cached.heroes)) return;
+      this.heroes = cached.heroes;
+      this.sieges = Array.isArray(cached.sieges) ? cached.sieges : [];
     }
 
     // --- DOM -----------------------------------------------------------------
@@ -250,18 +273,18 @@
      */
     _heroSection() {
       const box = document.createElement("div");
-      box.className = "dk-heroes";
+      box.className = "dk-heroes" + (this.refreshing ? " dk-refreshing" : "");
 
       const sep = document.createElement("div");
       sep.className = "dk-sep";
       box.appendChild(sep);
 
+      // Only ever seen on the very first run, before anything is cached.
       if (!this.heroes) {
         const loading = document.createElement("div");
         loading.className = "dk-hero";
-        loading.append(this._span("dk-icon", "⛑"), this._span("dk-hero-name", "Loading heroes…"));
+        loading.append(this._span("dk-icon", "⛑"), this._span("dk-hero-name", "Reading heroes…"));
         box.appendChild(loading);
-        this._loadHeroes();
         return box;
       }
 
@@ -274,15 +297,19 @@
           this._span("dk-hero-hp", `${hero.hp}/${hero.maxHp}`)
         );
 
-        if (SEN.heroes.isDamaged(hero)) {
-          const heal = document.createElement("button");
-          heal.type = "button";
-          heal.className = "dk-heal";
-          heal.textContent = "⛑";
-          heal.title = `Heal ${hero.name} — spends provisions`;
-          heal.addEventListener("click", () => this._heal(hero, heal));
-          row.appendChild(heal);
-        }
+        // One per hero, always — mirroring the game's own panel, which shows a
+        // heal for every champion and disables it at full health.
+        const damaged = SEN.heroes.isDamaged(hero);
+        const heal = document.createElement("button");
+        heal.type = "button";
+        heal.className = "dk-heal";
+        heal.textContent = "⛑";
+        heal.disabled = !damaged;
+        heal.title = damaged
+          ? `Heal ${hero.name} (${hero.hp}/${hero.maxHp}) — spends provisions`
+          : `${hero.name} is at full health`;
+        heal.addEventListener("click", () => this._heal(hero, heal));
+        row.appendChild(heal);
         box.appendChild(row);
 
         const bar = document.createElement("div");
@@ -309,9 +336,15 @@
       return box;
     }
 
-    async _loadHeroes() {
-      if (this._loadingHeroes) return;
-      this._loadingHeroes = true;
+    /**
+     * Fetch the roster in the background. Whatever is already on screen stays
+     * there, dimmed, until this lands — so navigating between pages never
+     * blanks the panel.
+     */
+    async _refreshHeroes() {
+      if (this.refreshing) return;
+      this.refreshing = true;
+      this._paintRefreshing();
       try {
         const [heroes, sieges] = await Promise.all([
           SEN.heroes.loadHeroes(),
@@ -319,17 +352,32 @@
         ]);
         this.heroes = heroes;
         this.sieges = sieges;
+        await store.set(HEROES_KEY, { heroes, sieges, at: Date.now() });
+        this.refreshing = false;
         this.render();
       } catch (e) {
-        // Quiet on purpose. A failed read here means /heroes moved or we are
-        // not on Wardenfall, and a toast on every page load would be noise.
-        // The loud path is _heal(), where something was actually at stake.
+        // Quiet on purpose. A failed read means /heroes moved or we are not on
+        // Wardenfall, and a toast on every page load would be noise. Keeping
+        // the stale roster beats replacing it with an error. The loud path is
+        // _heal(), where something was actually at stake.
         console.warn("[Seneschal] could not read heroes:", e);
-        this.heroes = [];
-        this.render();
-      } finally {
-        this._loadingHeroes = false;
+        this.refreshing = false;
+        if (!this.heroes) {
+          this.heroes = [];
+          this.render();
+        } else {
+          this._paintRefreshing();
+        }
       }
+    }
+
+    /**
+     * Toggle the "updating" look directly, without re-rendering — a rebuild
+     * here would throw away the rows we are deliberately keeping on screen.
+     */
+    _paintRefreshing() {
+      const box = this.rail.querySelector(".dk-heroes");
+      if (box) box.classList.toggle("dk-refreshing", this.refreshing);
     }
 
     /** Rotate through the active sieges; the first is the default. */
@@ -349,6 +397,12 @@
      * assuming the click worked.
      */
     async _heal(hero, button) {
+      // The button is disabled at full health, but the guard is repeated here
+      // so a stale row cannot spend provisions on a hero who does not need it.
+      if (!SEN.heroes.isDamaged(hero)) {
+        this.toast(`${hero.name} is already at full health.`);
+        return;
+      }
       const siege = this.settings.heroes.siege || this.sieges?.[0] || "";
       const where = siege ? ` on ${siege}` : "";
       if (!confirm(`Heal ${hero.name} (${hero.hp}/${hero.maxHp})${where}?\n\nThis spends provisions.`)) return;
@@ -369,8 +423,7 @@
         this.toast(`Could not heal ${hero.name}: ${e.message}`, true);
       } finally {
         button.classList.remove("dk-busy");
-        this.heroes = null; // force a fresh read
-        this._loadHeroes();
+        this._refreshHeroes(); // keeps the current rows up while it re-reads
       }
     }
 

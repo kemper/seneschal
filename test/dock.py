@@ -241,9 +241,24 @@ async def main() -> int:
             f"() => getComputedStyle({DOCK}.querySelector('.dk-rail .dk-text')).display"
         )
         check(labels_visible == "none", "collapsed rail hides labels but keeps them for screen readers")
+        collapsed_w = await page.evaluate(
+            f"() => {DOCK}.querySelector('.dk-rail').getBoundingClientRect().width"
+        )
         await page.evaluate(f"() => {DOCK}.querySelector('.dk-tab').click()")
         await page.wait_for_timeout(200)
         check("dk-collapsed" not in await wrap_class(), "the tab expands it again")
+
+        # Collapsing must actually NARROW the rail. Hiding the text while
+        # something else (the nowrap siege picker) holds the width open is the
+        # bug this guards — a ratio, so it survives font and padding changes.
+        expanded_w = await page.evaluate(
+            f"() => {DOCK}.querySelector('.dk-rail').getBoundingClientRect().width"
+        )
+        check(
+            collapsed_w < expanded_w * 0.62,
+            "collapsing actually narrows the rail, not just hides text",
+            f"collapsed={collapsed_w:.0f} expanded={expanded_w:.0f}",
+        )
 
         # --- adding a link from the page itself ------------------------------
         await page.evaluate(
@@ -478,7 +493,8 @@ async def main() -> int:
             f"() => [...{DOCK}.querySelectorAll('.dk-hero')].map(r => ({{"
             "  name: r.querySelector('.dk-hero-name')?.textContent,"
             "  hp: r.querySelector('.dk-hero-hp')?.textContent,"
-            "  heal: !!r.querySelector('.dk-heal') }))"
+            "  heal: !!r.querySelector('.dk-heal'),"
+            "  healDisabled: r.querySelector('.dk-heal')?.disabled }))"
         )
         check(len(heroes) == 5, "hero panel lists every hero", str(heroes))
         check(
@@ -487,9 +503,14 @@ async def main() -> int:
             str([h["name"] for h in heroes]),
         )
         check(
-            [h["name"] for h in heroes if h["heal"]] == ["Krogdolf", "Krogsly"],
-            "a heal button appears only for damaged heroes",
+            all(h["heal"] for h in heroes),
+            "every hero has a heal button",
             str([(h["name"], h["heal"]) for h in heroes]),
+        )
+        check(
+            [h["name"] for h in heroes if not h["healDisabled"]] == ["Krogdolf", "Krogsly"],
+            "only damaged heroes' heal buttons are enabled",
+            str([(h["name"], h["healDisabled"]) for h in heroes]),
         )
         bars = await page.evaluate(
             f"() => [...{DOCK}.querySelectorAll('.dk-bar-fill')].map(b => b.style.width)"
@@ -505,6 +526,46 @@ async def main() -> int:
             "  return b ? {{ text: b.textContent, hidden: b.hidden }} : null; }}".replace("{{", "{").replace("}}", "}")
         )
         check(siege is not None and not siege["hidden"], "the siege picker shows when more than one is active", str(siege))
+
+        # --- the roster is cached, so navigation never flashes a placeholder --
+        cached = await options.evaluate(
+            """async () => {
+                const o = await chrome.storage.local.get('seneschal.heroes.v1');
+                const c = o['seneschal.heroes.v1'];
+                return c ? { heroes: c.heroes.length, sieges: c.sieges.length, hasAt: !!c.at } : null;
+            }"""
+        )
+        check(cached is not None and cached["heroes"] == 5, "the roster is written to the cache", str(cached))
+
+        # Reload and watch the panel's very first paints. Because every in-game
+        # navigation is a full page load, a placeholder here would be seen on
+        # every page — so it must never appear once something is cached.
+        await page.bring_to_front()
+        await page.reload(wait_until="load")
+        seen = []
+        for _ in range(24):
+            state = await page.evaluate(
+                f"""() => {{
+                    const host = document.getElementById('seneschal-dock');
+                    if (!host) return null;
+                    const box = host.shadowRoot.querySelector('.dk-heroes');
+                    if (!box) return null;
+                    return [...box.querySelectorAll('.dk-hero-name')].map(e => e.textContent).join(',');
+                }}"""
+            )
+            if state:
+                seen.append(state)
+            await page.wait_for_timeout(60)
+        check(
+            bool(seen) and not any("Reading heroes" in s for s in seen),
+            "no placeholder is shown once the roster is cached",
+            str(seen[:3]),
+        )
+        check(
+            bool(seen) and seen[0].startswith("Krogdolf"),
+            "the cached roster paints first",
+            str(seen[:2]),
+        )
 
         # Switching the palette off must not take the hero panel with it.
         check(

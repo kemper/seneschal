@@ -172,8 +172,33 @@
 
 /* --- hero panel ---------------------------------------------------------- */
 
-.dk-heroes { display: flex; flex-direction: column; gap: 3px; padding-top: 2px; }
+.dk-heroes { display: flex; flex-direction: column; gap: 3px; padding-top: 2px; position: relative; }
 .dk-heroes[hidden] { display: none; }
+
+/* Refreshing: the last known roster stays put and is dimmed, rather than being
+   replaced by a placeholder. Every navigation is a full page load, so a
+   placeholder here would flash on every single page. */
+.dk-heroes.dk-refreshing .dk-hero,
+.dk-heroes.dk-refreshing .dk-bar { opacity: 0.45; transition: opacity 120ms ease-out; }
+.dk-heroes.dk-refreshing .dk-heal { pointer-events: none; }
+
+.dk-heroes::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d9a441;
+  opacity: 0;
+}
+.dk-left .dk-heroes::after { right: auto; left: 10px; }
+.dk-heroes.dk-refreshing::after { opacity: 1; animation: dk-pulse 900ms ease-in-out infinite; }
+@keyframes dk-pulse { 0%, 100% { opacity: 0.25 } 50% { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) {
+  .dk-heroes.dk-refreshing::after { animation: none; opacity: 0.8 }
+}
 
 .dk-hero { display: flex; align-items: center; gap: 7px; padding: 3px 10px; }
 .dk-left .dk-hero { flex-direction: row-reverse; }
@@ -181,7 +206,16 @@
 .dk-hero-hp { flex: none; font-size: 10.5px; color: #7d8798; font-variant-numeric: tabular-nums; }
 
 .dk-bar { height: 3px; border-radius: 2px; background: #2c333f; overflow: hidden; margin: 0 10px 2px; }
-.dk-wrap.dk-collapsed .dk-bar, .dk-wrap.dk-collapsed .dk-hero-name, .dk-wrap.dk-collapsed .dk-hero-hp { display: none; }
+/* Collapsed means ICONS ONLY. Anything with running text has to go, or it
+   holds the rail open at full width and the collapse does nothing visible —
+   the siege picker is nowrap, so it was the widest thing in here. */
+.dk-wrap.dk-collapsed .dk-bar,
+.dk-wrap.dk-collapsed .dk-hero-name,
+.dk-wrap.dk-collapsed .dk-hero-hp,
+.dk-wrap.dk-collapsed .dk-siege { display: none; }
+.dk-wrap.dk-collapsed .dk-hero { justify-content: center; gap: 4px; padding: 3px 8px; }
+.dk-wrap.dk-collapsed .dk-heroes::after { top: 2px; right: 4px; }
+.dk-left .dk-wrap.dk-collapsed .dk-heroes::after { left: 4px; right: auto; }
 .dk-bar-fill { height: 100%; background: #5fa564; transition: width 180ms ease-out; }
 .dk-bar-fill.dk-hurt { background: #d9a441; }
 .dk-bar-fill.dk-bad { background: #d16a5a; }
