@@ -117,23 +117,42 @@ async def main() -> int:
         check(await page.locator("#seneschal-root").count() == 1, "the palette still mounts alongside it")
 
         seeded = await labels()
-        for want in ["Realm", "Expeditions", "Buildings", "Craftables", "Arena", "Hunt"]:
-            check(want in seeded, f"default menu contains {want}", str(seeded))
+        check(
+            seeded == ["Champions", "Raids", "Sieges", "Arena", "Craftables", "Military"],
+            "default menu is the configured list, in order",
+            str(seeded),
+        )
         check("dk-right" in await wrap_class(), "dock defaults to the right edge")
-
-        # --- a url entry clicks the live anchor ------------------------------
-        check(await click_entry("Realm"), "Realm entry is clickable")
-        await page.wait_for_timeout(200)
-        check(await log() == "navigated:/empire", "url entry clicks the live nav link", f"log={await log()!r}")
 
         # --- a menu entry already on the page --------------------------------
         # CRAFTABLES is in the current sub-nav, rendered as "🛠 CRAFTABLES ●";
-        # the pattern is the bare word, so folding has to do the work.
-        await click_entry("Craftables")
+        # the pattern is the bare word, so folding has to do the work. Done
+        # first because it leaves the realm sub-nav row in place.
+        check(await click_entry("Craftables"), "Craftables entry is clickable")
         await page.wait_for_timeout(250)
         check(
             await log() == "navigated:/craftables",
             "menu entry matches a decorated label on the current page",
+            f"log={await log()!r}",
+        )
+
+        # --- a url entry clicks the live anchor ------------------------------
+        # MILITARY is in the realm sub-nav right now, so this must be served by
+        # clicking that anchor rather than by navigating to /military.
+        await click_entry("Military")
+        await page.wait_for_timeout(250)
+        check(
+            await log() == "navigated:/military",
+            "url entry clicks the live nav link",
+            f"log={await log()!r}",
+        )
+
+        # A primary door, reachable from the header on every page.
+        await click_entry("Champions")
+        await page.wait_for_timeout(250)
+        check(
+            await log() == "navigated:/heroes",
+            "url entry for a primary door works from anywhere",
             f"log={await log()!r}",
         )
 
@@ -177,9 +196,34 @@ async def main() -> int:
         await page.wait_for_timeout(300)
         check("Ledger" in await labels(), "the new entry appears on the rail", str(await labels()))
 
-        # Back to the realm door, so LEDGER is in the sub-nav row again and the
-        # entry can be served by clicking a live anchor.
-        await click_entry("Realm")
+        # --- the confirmation toast keeps out of the way ---------------------
+        # It used to be nested inside the transformed .dk-wrap, which made it
+        # the wrap's containing block, so "fixed; bottom" planted the toast on
+        # top of the menu. Assert the geometry, not the markup.
+        boxes = await page.evaluate(
+            f"""() => {{
+                const r = {DOCK}.querySelector('.dk-rail').getBoundingClientRect();
+                const t = {DOCK}.querySelector('.dk-toast').getBoundingClientRect();
+                return {{ visible: !{DOCK}.querySelector('.dk-toast').hidden,
+                          overlaps: !(t.right < r.left || t.left > r.right ||
+                                      t.bottom < r.top || t.top > r.bottom),
+                          below: t.top >= r.bottom }};
+            }}"""
+        )
+        check(boxes["visible"], "adding an entry confirms with a toast")
+        check(not boxes["overlaps"], "the toast does not cover the menu", str(boxes))
+        check(boxes["below"], "the toast sits below the rail", str(boxes))
+
+        await page.wait_for_timeout(3200)  # confirmations clear in 2.6s
+        check(
+            await page.evaluate(f"() => {DOCK}.querySelector('.dk-toast').hidden") is True,
+            "the confirmation toast clears quickly",
+        )
+
+        # Scaffolding, not a behaviour under test: put the fixture back on the
+        # realm door so LEDGER is in the sub-nav row and the new entry can be
+        # served by clicking a live anchor.
+        await page.evaluate("() => document.querySelector(\"header a[href='/empire']\").click()")
         await page.wait_for_timeout(250)
         await click_entry("Ledger")
         await page.wait_for_timeout(250)

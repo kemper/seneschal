@@ -172,25 +172,38 @@
 
 /* --- toast ---------------------------------------------------------------- */
 
-/* Failures are LOUD by design: a pattern that stops matching after a patch has
-   to be visible, not a button that quietly does nothing. */
+/* Sits BELOW the rail, on the same side, and is a sibling of .dk-wrap rather
+   than a child of it. That is not cosmetic: .dk-wrap is transformed to centre
+   itself, and a transformed ancestor becomes the containing block for
+   position: fixed descendants — nested inside, this box positioned itself
+   against the rail and covered the menu. */
 .dk-toast {
   position: fixed;
-  bottom: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: min(460px, 90vw);
+  bottom: 22px;
+  max-width: min(360px, 46vw);
   z-index: 2147483001;
-  padding: 9px 14px;
-  border: 1px solid #6d4b2c;
+  padding: 8px 13px;
+  border: 1px solid #2c333f;
   border-radius: 8px;
-  background: #241a12;
-  color: #f0c88a;
+  background: #1a1f28;
+  color: #cbd2dd;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 12.5px;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
 }
 .dk-toast[hidden] { display: none; }
+.dk-toast-right { right: 16px; }
+.dk-toast-left  { left: 16px; }
+
+/* Failures are LOUD by design: a pattern that stops matching after a patch has
+   to be visible, not a button that quietly does nothing. Warnings are coloured
+   and stay up far longer than a confirmation does. */
+.dk-toast.dk-warn {
+  border-color: #6d4b2c;
+  background: #241a12;
+  color: #f0c88a;
+  max-width: min(460px, 70vw);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .dk-wrap, .dk-toast { transition: none }

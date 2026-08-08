@@ -107,10 +107,26 @@ Entries come in two kinds, and the second is the interesting one:
 | **Menu entry** | `craftables`, plus an optional door `/empire` | Clicks the navigation entry whose **visible label** matches. If nothing on this page matches, it goes through the door first, waits for the row to render, and clicks it there. |
 
 The second kind exists because the game's sub-navigation is contextual:
-`CRAFTABLES`, `ARENA` and `🐗 HUNT` have no address you can usefully link to
-from elsewhere — the honest description of the journey is "go to
-`/expeditions`, then click the thing called ARENA", and that is what the entry
-stores.
+`CRAFTABLES`, `ARENA` and `🐗 HUNT` are simply **not on the page** unless you
+are already inside their parent door. The honest description of the journey is
+"go to `/expeditions`, then click the thing called ARENA", and that is what the
+entry stores.
+
+**Prefer a path when you know it.** Most of these destinations do have a URL —
+a *Menu entry* is not a claim that one does not exist. It is the right choice
+in four cases:
+
+- **The URL is not known yet.** 11 of the 23 entries in `src/catalog.js` have
+  no path, because the catalog was written from captured page text rather than
+  from the live site. Run `tools/harvest-nav.js` and most of those can become
+  plain path entries.
+- **The route misbehaves on a hard load,** as `/buildings` is reported to.
+  (Second-hand and unverified — but clicking through costs nothing.)
+- **The control genuinely has no href.** A dropdown toggle like the user menu
+  is a `<button>`; there is no address to go to, and a pattern is the only way
+  to put it on the rail.
+- **You would rather pin the name than the address,** because you expect the
+  URL to move and the label to stay.
 
 A pattern is matched with case, spacing, emoji and the trailing `●` folded
 away, so `craftables` matches `🛠 CRAFTABLES ●`. Wrap it in slashes

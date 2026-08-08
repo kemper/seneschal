@@ -22,11 +22,21 @@
  *       that path if one is on screen, else by navigating.
  *
  *   { type: "menu", match: "craftables", door: "/empire" }
- *       A destination with NO stable address — the game's sub-navigation is
- *       contextual, so CRAFTABLES / ARENA / HUNT only exist as clickable
- *       entries once you are already inside their parent door. `match` is a
- *       pattern tested against the VISIBLE LABEL of nav entries; `door` is
- *       where to go first when nothing on this page matches.
+ *       Reached by NAME rather than by address. `match` is a pattern tested
+ *       against the VISIBLE LABEL of nav entries; `door` is where to go first
+ *       when nothing on this page matches.
+ *
+ *       Most nav entries in this game DO have a URL, so prefer `url` when you
+ *       know it. This kind earns its place in four narrower cases:
+ *         - the URL is not known yet (11 of catalog.js's 23 entries have none,
+ *           because the catalog was written from captured text — harvest them
+ *           with tools/harvest-nav.js and those become plain `url` entries);
+ *         - the route misbehaves on a hard load, as /buildings is reported to
+ *           (second-hand and unverified), so clicking through is safer;
+ *         - the control genuinely has no href — a dropdown toggle such as the
+ *           user menu is a button, and there is nothing to navigate to;
+ *         - you would rather pin the name than the address, because you expect
+ *           the URL to move and the label to stay.
  *
  * Matching visible labels rather than class names or DOM shape is deliberate:
  * the game reorganised its whole navigation in v1.96 and ships patches most
@@ -45,21 +55,33 @@
   const MAX_LABEL = 32;
 
   /**
-   * The out-of-the-box menu. Deliberately shows off BOTH kinds: the four
-   * primary doors have real paths, while BUILDINGS / CRAFTABLES / ARENA / HUNT
-   * are contextual sub-nav reached by pattern. (Buildings has a path, but a
-   * hard load of it is reported to render near-empty, so clicking is the
-   * better route — exactly what a `menu` entry does.)
+   * The out-of-the-box menu, as requested.
+   *
+   * The kind chosen for each entry mirrors what is actually known about that
+   * destination in catalog.js, which is the honest thing to do:
+   *
+   *   CHAMPIONS and MILITARY have paths that came from captured page text, so
+   *   they are `url` entries — one hop, and they still prefer clicking a live
+   *   anchor when one is on screen.
+   *
+   *   ARENA, SIEGES and CRAFTABLES have no path in the catalog. They almost
+   *   certainly HAVE one on the live site — we just have not harvested it —
+   *   so a `menu` entry is the placeholder that works today. Once
+   *   tools/harvest-nav.js has been run against the real site, promoting them
+   *   to `url` entries is the better answer.
+   *
+   *   RAIDS appears in the catalog only as a KEYWORD for Expeditions, never as
+   *   a nav entry of its own, so this one is a guess. If the label is wrong,
+   *   the door gets walked and then a warning names the pattern that missed —
+   *   which is the whole reason failures here are loud.
    */
   const DEFAULT_ITEMS = [
-    { id: "seed-realm", icon: "🏰", label: "Realm", type: "url", path: "/empire" },
-    { id: "seed-expeditions", icon: "🧭", label: "Expeditions", type: "url", path: "/expeditions" },
-    { id: "seed-champions", icon: "⚔️", label: "Champions", type: "url", path: "/heroes" },
-    { id: "seed-inventory", icon: "🎒", label: "Inventory", type: "url", path: "/inventory" },
-    { id: "seed-buildings", icon: "🏛", label: "Buildings", type: "menu", match: "buildings", door: "/empire" },
+    { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
+    { id: "seed-raids", icon: "🏴", label: "Raids", type: "menu", match: "raids", door: "/expeditions" },
+    { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "menu", match: "sieges", door: "/expeditions" },
+    { id: "seed-arena", icon: "⚔️", label: "Arena", type: "menu", match: "arena", door: "/expeditions" },
     { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/empire" },
-    { id: "seed-arena", icon: "🗡", label: "Arena", type: "menu", match: "arena", door: "/expeditions" },
-    { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "menu", match: "hunt", door: "/expeditions" },
+    { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
   ];
 
   function defaults() {

@@ -7,11 +7,15 @@
  * the visible labels of the game's navigation, plus an optional `door` to walk
  * through first when nothing on the current page matches.
  *
- * That second kind is what makes contextual sub-navigation reachable in one
- * click. Wardenfall only renders CRAFTABLES / ARENA / HUNT once you are inside
- * their parent door, so "go to /expeditions, then click the thing called ARENA"
- * is the honest description of the journey — and it is expressed here as data
- * rather than as a hardcoded route table.
+ * That second kind makes contextual sub-navigation reachable in one click.
+ * Wardenfall only renders CRAFTABLES / ARENA / HUNT once you are inside their
+ * parent door, so "go to /expeditions, then click the thing called ARENA" is
+ * the honest description of the journey, expressed as data rather than as a
+ * hardcoded route table.
+ *
+ * Note that this is about the link not being ON THE PAGE, not about it having
+ * no URL — most of these do have one. See config.js for when each kind is the
+ * right choice; a known-good URL is usually the better entry.
  *
  * Everything lives in its own shadow root, on a host separate from the
  * palette's, so the game's CSS cannot reach in and its re-renders cannot sweep
@@ -27,7 +31,10 @@
   // longer than it has ever taken, and failing at all is meant to be visible.
   const RESOLVE_MS = 6000;
   const PENDING_KEY = "seneschal.pending.v1";
-  const TOAST_MS = 7000;
+  // A confirmation has done its job the moment you have read it. A warning is
+  // the whole point of the loud-failure design, so it lingers.
+  const TOAST_MS = 2600;
+  const TOAST_WARNING_MS = 7000;
 
   const store = {
     async get(key, fallback) {
@@ -88,7 +95,7 @@
       this.settings = config;
       if (problems.length) {
         console.warn("[Seneschal] quick menu config:", problems.join(" · "));
-        this.toast(`Quick menu: ${problems[0]}`);
+        this.toast(`Quick menu: ${problems[0]}`, true);
       }
       this.render();
 
@@ -156,13 +163,22 @@
           </div>
         </div>
         <button type="button" class="dk-tab" title="Collapse or expand the quick menu"></button>
-        <div class="dk-rail" role="navigation" aria-label="Seneschal quick menu"></div>
-        <div class="dk-toast" role="status" aria-live="polite" hidden></div>`;
+        <div class="dk-rail" role="navigation" aria-label="Seneschal quick menu"></div>`;
+
+      // The toast is a SIBLING of the wrap, not a child. .dk-wrap is
+      // transform: translateY(-50%) to centre itself, and a transformed
+      // ancestor becomes the containing block for position: fixed descendants —
+      // so inside the wrap, "fixed; bottom: 18px" resolved against the rail and
+      // planted the toast on top of the menu.
+      this.toastEl = document.createElement("div");
+      this.toastEl.className = "dk-toast";
+      this.toastEl.setAttribute("role", "status");
+      this.toastEl.setAttribute("aria-live", "polite");
+      this.toastEl.hidden = true;
 
       this.rail = this.wrap.querySelector(".dk-rail");
       this.tab = this.wrap.querySelector(".dk-tab");
       this.form = this.wrap.querySelector(".dk-form");
-      this.toastEl = this.wrap.querySelector(".dk-toast");
       this.errorEl = this.wrap.querySelector(".dk-error");
       this.typeSelect = this.wrap.querySelector("#dk-type");
 
@@ -181,7 +197,7 @@
         }
       });
 
-      this.root.append(style, this.wrap);
+      this.root.append(style, this.wrap, this.toastEl);
       // documentElement, not body: the game re-renders body subtrees on a timer.
       document.documentElement.appendChild(this.host);
     }
@@ -191,6 +207,7 @@
       const { side, collapsed, enabled, items } = this.settings.dock;
       this.wrap.className = `dk-wrap dk-${side === "left" ? "left" : "right"}` + (collapsed ? " dk-collapsed" : "");
       this.wrap.hidden = !enabled;
+      this.toastEl.className = `dk-toast dk-toast-${side === "left" ? "left" : "right"}`;
       this.tab.textContent = collapsed ? "MENU" : "HIDE";
       this.tab.setAttribute("aria-expanded", String(!collapsed));
 
@@ -264,7 +281,7 @@
     _goto(path) {
       const target = SEN.config.classifyPath(path, location.origin);
       if (!target) {
-        this.toast(`Quick menu: "${path}" is not a usable link.`);
+        this.toast(`Quick menu: "${path}" is not a usable link.`, true);
         return false;
       }
       if (target.kind === "external") {
@@ -296,7 +313,7 @@
     _openMenuEntry(item) {
       const parsed = SEN.config.parsePattern(item.match);
       if (parsed.error) {
-        this.toast(`Quick menu: "${item.label}" has a bad pattern — ${parsed.error}`);
+        this.toast(`Quick menu: "${item.label}" has a bad pattern — ${parsed.error}`, true);
         return;
       }
 
@@ -306,7 +323,7 @@
         return;
       }
       if (!item.door) {
-        this.toast(`Quick menu: nothing here is called "${item.match}", and "${item.label}" has no door set.`);
+        this.toast(`Quick menu: nothing here is called "${item.match}", and "${item.label}" has no door set.`, true);
         return;
       }
 
@@ -353,7 +370,7 @@
         // look like a button that simply does nothing.
         const message = `Quick menu: could not find a menu entry matching "${pending.match}".`;
         console.warn("[Seneschal]", message);
-        this.toast(message);
+        this.toast(message, true);
       };
 
       const attempt = () => {
@@ -502,18 +519,20 @@
       try {
         chrome.runtime.sendMessage({ type: "seneschal:open-options" });
       } catch {
-        this.toast("Open the Seneschal options from chrome://extensions to configure the quick menu.");
+        this.toast("Open the Seneschal options from chrome://extensions to configure the quick menu.", true);
       }
     }
 
     // --- toast ---------------------------------------------------------------
-    toast(message) {
+    /** @param {boolean} [warning] true keeps it up long enough to be read and acted on. */
+    toast(message, warning = false) {
       this.toastEl.textContent = message;
+      this.toastEl.classList.toggle("dk-warn", warning);
       this.toastEl.hidden = false;
       clearTimeout(this.toastTimer);
       this.toastTimer = setTimeout(() => {
         this.toastEl.hidden = true;
-      }, TOAST_MS);
+      }, warning ? TOAST_WARNING_MS : TOAST_MS);
     }
   }
 
