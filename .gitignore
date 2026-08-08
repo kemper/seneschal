@@ -1,0 +1,21 @@
+# Local scratch from DevTools harvest / recon runs. These can contain game
+# state, so they stay out of git by default — review before sharing any of it.
+harvest-*.json
+harvest-*.txt
+recon-*.json
+recon-*.txt
+scratch/
+
+# Node, only if a build ever gets added; there are no dependencies today.
+node_modules/
+npm-debug.log*
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python test byproducts
+__pycache__/
+*.pyc

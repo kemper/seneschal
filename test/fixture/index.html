@@ -1,0 +1,103 @@
+<!doctype html>
+<!--
+  Mock Wardenfall shell used by the end-to-end test.
+
+  The structure mirrors captured page text from the live site: a brand, six
+  primary doors each suffixed with a non-breaking space + "●", a contextual
+  second row, resource chips, and a user menu. Class names are intentionally
+  opaque, the way a compiled app's are, so the test proves the scanner is not
+  quietly relying on readable selectors.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Wardenfall (fixture)</title>
+  <style>
+    body { margin: 0; background: #0d1015; color: #cbd2dd;
+           font-family: ui-sans-serif, system-ui, sans-serif; }
+    .a1b2 { display: flex; gap: 18px; align-items: center;
+            padding: 10px 16px; border-bottom: 1px solid #232a34; }
+    .c3d4 { display: flex; gap: 14px; padding: 8px 16px;
+            border-bottom: 1px solid #1b212a; font-size: 13px; }
+    a, button { color: #cbd2dd; text-decoration: none; background: none;
+                border: 0; font: inherit; cursor: pointer; }
+    .brand { font-weight: 800; letter-spacing: .08em; color: #d9a441; }
+    main { padding: 32px 16px; }
+    #log { font-family: ui-monospace, monospace; font-size: 12px; color: #6b7686; }
+  </style>
+</head>
+<body>
+  <header class="a1b2">
+    <a class="brand" href="/empire">WARDENFALL</a>
+    <a href="/empire">REALM&nbsp;●</a>
+    <a href="/expeditions">EXPEDITIONS&nbsp;●</a>
+    <a href="/heroes">CHAMPIONS&nbsp;●</a>
+    <a href="/inventory">INVENTORY&nbsp;●</a>
+    <a href="/lore">LORE&nbsp;●</a>
+    <a href="/rankings">RANKINGS&nbsp;●</a>
+    <span class="x9">🪙 4,102,883</span>
+    <span class="x9">🌾 38,204</span>
+    <span class="x9">⏳ 11/16</span>
+    <a href="/messages">✉ 3 NEW MESSAGES</a>
+    <button type="button">LORD KRISTOPH ▾</button>
+  </header>
+
+  <!-- Contextual sub-nav: only the current door's children are present. -->
+  <nav class="c3d4">
+    <a href="/buildings">BUILDINGS ●</a>
+    <a href="/market">MARKET ●</a>
+    <a href="/military">MILITARY ●</a>
+    <a href="/diplomacy">STATECRAFT ●</a>
+    <a href="/craftables">🛠 CRAFTABLES ●</a>
+    <!-- No ● marker: stands in for the game restyling that dot away. It must
+         still be indexed and learned, on the strength of living in a <nav>. -->
+    <a href="/ledger">LEDGER</a>
+  </nav>
+
+  <main>
+    <h1>Empire</h1>
+    <p id="log">no navigation yet</p>
+  </main>
+
+  <script>
+    // Contextual sub-nav, the way the real game does it: each door swaps the
+    // second row, so entries under OTHER doors are simply not in the DOM.
+    // This is what makes a single-page scan insufficient — and what the nav
+    // harvester has to walk the doors to discover.
+    const SUBNAV = {
+      '/empire': [
+        ['BUILDINGS ●', '/buildings'], ['MARKET ●', '/market'],
+        ['MILITARY ●', '/military'], ['STATECRAFT ●', '/diplomacy'],
+        ['🛠 CRAFTABLES ●', '/craftables'],
+        ['LEDGER', '/ledger'], // no ● on purpose — see the scanner tests
+      ],
+      '/expeditions': [
+        ['ARENA ●', '/arena'], ['DELVE ●', '/delve'],
+        ['HOLDS ●', '/holds'], ['🐗 HUNT ●', '/hunt'],
+      ],
+      '/heroes': [['SPELLBOOK ●', '/spellbook']],
+    };
+
+    // Stand in for the SPA router: record clicks instead of navigating, so the
+    // test can assert which element the palette actually activated.
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest('a[href]');
+      if (!a) return;
+      e.preventDefault();
+      const href = a.getAttribute('href');
+      document.getElementById('log').textContent = 'navigated:' + href;
+
+      const rows = SUBNAV[href];
+      const nav = document.querySelector('nav.c3d4');
+      if (!rows || !nav) return;
+      nav.textContent = '';
+      for (const [text, path] of rows) {
+        const link = document.createElement('a');
+        link.setAttribute('href', path);
+        link.textContent = text;
+        nav.appendChild(link);
+      }
+    });
+  </script>
+</body>
+</html>
