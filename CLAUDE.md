@@ -154,6 +154,36 @@ cost. Elixir cards are keyed to their "Mend a Hero · +N HP" use-block by the
 MEND AMOUNT; the hero picker and USE ON HERO only exist for an elixir you
 actually hold, so a held count of 0 means CRAFT first.
 
+**18. NEVER `alert()`, `confirm()` or `prompt()` — not now, not later.**
+A standing instruction from the user. Native dialogs are browser chrome, so
+they read as Chrome speaking rather than the extension; they cannot be styled
+or placed; they freeze the page and every timer on it; and under automation
+they hang the session outright (which is why the browser-automation guidance
+says the same thing). Anything needing an answer uses `Dock._ask()`, which
+opens the `.dk-ask` panel beside the rail and resolves a promise. `test/dock.py`
+registers a `page.on("dialog")` listener that fails the run if one ever fires —
+keep it, because Playwright auto-dismisses dialogs when nothing is listening,
+so a `confirm()` would otherwise pass silently.
+
+**19. Verify a mutation by POLLING the server, not by one read after a wait.**
+A heal is a Server Action plus a re-render, and that round trip is not a fixed
+cost. `healAll` clicked, waited 2s, read once, and reported "did not take" on a
+heal that had gone through — the user saw it work on `/heroes` a moment later.
+`pollUntil()` in `heroes.js` now reads until the change appears or 15s passes,
+treating a failed read as "not yet" (a cancelled request during navigation is
+routine). When it still hasn't changed, `blockedBy(doc)` reports any
+`role="dialog"` in the frame rather than shrugging — but it never clicks
+through one, because an unidentified button here can commit an assault.
+
+**20. A shipped config is a promise; repair it, don't just fix the default.**
+The first quick menu reached Craftables/Buildings/Arena/Hunt by NAME through
+doors that don't carry those labels, and pointed Inventory at `/inventory`
+(a 404). Changing `DEFAULT_ITEMS` fixed new installs only — everyone already
+running kept the broken entries, which is how "Craftables" navigated and *then*
+warned it couldn't find craftables. `LEGACY_SEEDS` in `config.js` rewrites them
+on load, but ONLY when an entry is still byte-identical to what we shipped:
+edit any field and it is yours, untouched.
+
 ## Working agreements
 
 - **Verify in a browser; do not trust reading.** Every bug so far was caught by
@@ -176,13 +206,14 @@ actually hold, so a held count of 0 means CRAFT first.
 ```bash
 node --test test/fuzzy.test.mjs     # 12
 node --test test/learned.test.mjs   # 11
-node --test test/config.test.mjs    # 27
+node --test test/config.test.mjs    # 32
+node --test test/heroes.test.mjs    # 14
 python3 test/e2e.py                 # 26
-python3 test/dock.py                # 42
+python3 test/dock.py                # 70
 python3 test/harvest.py             # 15
 ```
 
-133 checks. Keep them passing.
+180 checks. Keep them passing.
 
 The Python tests need Playwright. There is a local `.venv` (gitignored):
 `.venv/bin/python3 test/dock.py`. `test/chromium_path.py` finds a Chromium

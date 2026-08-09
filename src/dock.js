@@ -159,6 +159,14 @@
       // screen edge, with the tab beside it and the form opening inward. Put
       // the form first and it no longer shoves the rail sideways when it opens.
       this.wrap.innerHTML = `
+        <div class="dk-ask" hidden role="alertdialog" aria-modal="true" aria-labelledby="dk-ask-title">
+          <h2 id="dk-ask-title"></h2>
+          <p class="dk-ask-body"></p>
+          <div class="dk-actions">
+            <button type="button" class="dk-ask-no">Cancel</button>
+            <button type="button" class="dk-primary dk-ask-yes">Confirm</button>
+          </div>
+        </div>
         <div class="dk-form" hidden role="dialog" aria-label="Add a quick menu entry">
           <h2>Add to quick menu</h2>
           <div class="dk-field">
@@ -210,6 +218,21 @@
       this.form = this.wrap.querySelector(".dk-form");
       this.errorEl = this.wrap.querySelector(".dk-error");
       this.typeSelect = this.wrap.querySelector("#dk-type");
+      this.ask = this.wrap.querySelector(".dk-ask");
+      this.askTitleEl = this.ask.querySelector("h2");
+      this.askBodyEl = this.ask.querySelector(".dk-ask-body");
+      this.askYes = this.ask.querySelector(".dk-ask-yes");
+
+      this.askYes.addEventListener("click", () => this._closeAsk(true));
+      this.ask.querySelector(".dk-ask-no").addEventListener("click", () => this._closeAsk(false));
+      this.ask.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== "Escape") return;
+        // The game handles keys too, and a re-render underneath an open
+        // question is exactly the kind of thing that eats the answer.
+        e.preventDefault();
+        e.stopPropagation();
+        this._closeAsk(e.key === "Enter");
+      });
 
       this.tab.addEventListener("click", () => this._setCollapsed(!this.settings.dock.collapsed));
       this.typeSelect.addEventListener("change", () => this._syncFormFields());
@@ -506,7 +529,12 @@
           : method.elixir.held > 0
             ? `one ${method.elixir.name} (+${method.elixir.mend} HP)`
             : `${method.elixir.cost} to brew a ${method.elixir.name} (+${method.elixir.mend} HP)`;
-      if (!confirm(`Heal ${hero.name} (${hero.hp}/${hero.maxHp})?\n\nThis spends ${cost}.`)) return;
+      const go = await this._ask({
+        title: `Heal ${hero.name}?`,
+        body: `${hero.hp}/${hero.maxHp} HP. This spends ${cost}.`,
+        confirmLabel: "Heal",
+      });
+      if (!go) return;
 
       button.disabled = true;
       button.classList.add("dk-busy");
@@ -520,8 +548,10 @@
           this.toast(`${hero.name}: ${out.before} → ${out.after}/${out.maxHp}${how}.`);
         } else {
           // Loud: a click that changed nothing means the button moved, the
-          // siege ended, or the server refused.
-          this.toast(`Heal did not take — ${hero.name} is still ${out.before}/${out.maxHp}.`, true);
+          // siege ended, or the server refused. If the frame can say WHY, say
+          // that instead of leaving you to guess.
+          const why = out.blocked ? ` — ${out.blocked}` : "";
+          this.toast(`Heal did not take${why}. ${hero.name} is still ${out.before}/${out.maxHp}.`, true);
         }
       } catch (e) {
         console.warn("[Seneschal] heal failed:", e);
@@ -530,6 +560,40 @@
         button.classList.remove("dk-busy");
         this._refreshHeroes(); // keeps the current rows up while it re-reads
       }
+    }
+
+    // --- asking --------------------------------------------------------------
+
+    /**
+     * Ask a yes/no question in the dock's own panel, beside the rail.
+     *
+     * NEVER `confirm()`. Native dialogs are a hard no in this extension: they
+     * are browser chrome, so they read as the browser speaking rather than us,
+     * they cannot be styled or placed, they freeze the page and every timer on
+     * it, and in an automated browser they hang the session outright. Anything
+     * that needs an answer asks here.
+     *
+     * @returns {Promise<boolean>}
+     */
+    _ask({ title, body, confirmLabel = "Confirm" }) {
+      this._closeAsk(false); // never stack two questions
+      return new Promise((resolve) => {
+        this.askResolve = resolve;
+        this.askTitleEl.textContent = title;
+        this.askBodyEl.textContent = body || "";
+        this.askBodyEl.hidden = !body;
+        this.askYes.textContent = confirmLabel;
+        this.ask.hidden = false;
+        this.askYes.focus();
+      });
+    }
+
+    /** Settle an open question. Safe to call when nothing is open. */
+    _closeAsk(answer) {
+      if (this.ask) this.ask.hidden = true;
+      const resolve = this.askResolve;
+      this.askResolve = null;
+      if (resolve) resolve(answer);
     }
 
     _span(className, text) {
@@ -728,6 +792,7 @@
 
     // --- add form ------------------------------------------------------------
     _openForm() {
+      this._closeAsk(false); // one panel beside the rail at a time
       this.form.hidden = false;
       this._showError("");
       const label = this.wrap.querySelector("#dk-label");
@@ -805,8 +870,15 @@
 
     /** Press the game's own heal-all, quoting its own price back to you. */
     async _healAll(button) {
-      const quote = this.healAll?.summary ? `\n\n${this.healAll.summary}` : "";
-      if (!confirm(`Heal every wounded hero?${quote}`)) return;
+      const go = await this._ask({
+        title: "Heal every wounded hero?",
+        // The game's own costing, quoted verbatim — it picks the elixirs and
+        // does the arithmetic, and a second implementation would eventually
+        // disagree with it.
+        body: this.healAll?.summary || "",
+        confirmLabel: "Heal all",
+      });
+      if (!go) return;
 
       button.disabled = true;
       button.classList.add("dk-busy");
@@ -815,7 +887,8 @@
         if (out.healed) {
           this.toast(`Mended ${out.wounded} hero${out.wounded === 1 ? "" : "es"}, +${out.gained} HP.`);
         } else {
-          this.toast("Heal all did not take — nothing changed.", true);
+          const why = out.blocked ? ` — ${out.blocked}` : " — nothing changed.";
+          this.toast(`Heal all did not take${why}`, true);
         }
       } catch (e) {
         console.warn("[Seneschal] heal all failed:", e);

@@ -237,3 +237,72 @@ test("the default paths are the harvested ones, not the guessable ones", () => {
   assert.equal(byLabel.Craftables, "/expeditions/buildings/craftables");
   assert.equal(byLabel.Champions, "/heroes");
 });
+
+// --- repairing entries an earlier build got wrong ---------------------------
+
+test("a stored legacy menu seed is rewritten to its harvested path", () => {
+  // This is the bug the user hit: pressing Craftables walked to /empire, which
+  // does not carry that label, and then correctly announced it could not find
+  // a menu entry called "craftables".
+  const stored = {
+    dock: {
+      items: [{ id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/empire" }],
+    },
+  };
+  const { config, problems } = CFG.normalize(stored);
+  const item = config.dock.items[0];
+  // Arrays out of the vm sandbox are cross-realm, so compare the length.
+  assert.equal(problems.length, 0, problems.join(" · "));
+  assert.equal(item.type, "url");
+  assert.equal(item.path, "/expeditions/buildings/craftables");
+  assert.equal(item.match, undefined, "the dead pattern is gone, not carried alongside a path");
+  assert.equal(item.door, undefined);
+  assert.equal(item.label, "Craftables", "the label the user sees is untouched");
+});
+
+test("a legacy seed pointing at a 404 path is repaired too", () => {
+  // /inventory does not exist; the real route is /expeditions/inventory.
+  const { config } = CFG.normalize({
+    dock: { items: [{ id: "seed-inventory", icon: "🎒", label: "Inventory", type: "url", path: "/inventory" }] },
+  });
+  assert.equal(config.dock.items[0].path, "/expeditions/inventory");
+});
+
+test("an edited legacy seed is left alone", () => {
+  // A stored config is the user's. Only entries still identical to what we
+  // shipped get rewritten; change any part of it and it is yours.
+  const mine = { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/expeditions/buildings" };
+  const { config } = CFG.normalize({ dock: { items: [mine] } });
+  const item = config.dock.items[0];
+  assert.equal(item.type, "menu");
+  assert.equal(item.door, "/expeditions/buildings");
+});
+
+test("migration leaves entries it does not recognise untouched", () => {
+  const mine = { id: "it-abc123", label: "My page", type: "menu", match: "craftables", door: "/empire" };
+  assert.equal(CFG.migrateItem(mine), mine);
+});
+
+test("every legacy repair lands on a path the catalog knows", () => {
+  // Guards against repairing one invented path into another. Each target must
+  // be a real harvested route.
+  const known = new Set([
+    "/expeditions/buildings",
+    "/expeditions/buildings/craftables",
+    "/expeditions/inventory",
+    "/arena",
+    "/hunt",
+  ]);
+  for (const id of ["seed-buildings", "seed-craftables", "seed-arena", "seed-hunt", "seed-inventory"]) {
+    const legacy = {
+      "seed-buildings": { type: "menu", match: "buildings", door: "/empire" },
+      "seed-craftables": { type: "menu", match: "craftables", door: "/empire" },
+      "seed-arena": { type: "menu", match: "arena", door: "/expeditions" },
+      "seed-hunt": { type: "menu", match: "hunt", door: "/expeditions" },
+      "seed-inventory": { type: "url", path: "/inventory" },
+    }[id];
+    const out = CFG.migrateItem({ id, label: id, ...legacy });
+    assert.equal(out.type, "url", `${id} should end up as a url entry`);
+    assert.ok(known.has(out.path), `${id} migrated to unknown path ${out.path}`);
+  }
+});

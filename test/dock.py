@@ -99,6 +99,19 @@ async def main() -> int:
         page = await ctx.new_page()
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
+        # Native alert/confirm/prompt are banned outright. Playwright
+        # auto-dismisses dialogs, so without this listener a confirm() would
+        # pass silently here and freeze a real browser instead.
+        dialogs: list[str] = []
+
+        def on_dialog(d):
+            dialogs.append(f"{d.type}: {d.message}")
+            # Registering a listener turns OFF Playwright's auto-dismiss, so
+            # this has to dismiss it or the whole run hangs — which is the same
+            # failure mode a native dialog would cause for a real user.
+            asyncio.ensure_future(d.dismiss())
+
+        page.on("dialog", on_dialog)
         await page.goto(f"http://127.0.0.1:{port}/index.html", wait_until="load")
         await page.wait_for_timeout(700)  # let document_idle injection land
 
@@ -598,6 +611,80 @@ async def main() -> int:
             "an elixir bigger than the wound says so",
             str(by_glyph.get("💧", {}).get("title")),
         )
+
+        # --- asking happens in our own panel, never in a native dialog --------
+        # Clicking a heal method must ask first. Cancelling it must spend
+        # nothing, which is why this test only ever presses Cancel.
+        await page.evaluate(
+            f"() => {DOCK}.querySelectorAll('.dk-methods')[0].querySelector('.dk-method').click()"
+        )
+        await page.wait_for_timeout(150)
+        ask = await page.evaluate(
+            f"""() => {{
+                const a = {DOCK}.querySelector('.dk-ask');
+                if (!a || a.hidden) return null;
+                return {{
+                    title: a.querySelector('h2').textContent,
+                    body: a.querySelector('.dk-ask-body').textContent,
+                    yes: a.querySelector('.dk-ask-yes').textContent,
+                    role: a.getAttribute('role'),
+                    focused: {DOCK}.activeElement === a.querySelector('.dk-ask-yes'),
+                }};
+            }}"""
+        )
+        check(ask is not None, "a heal asks before it spends", str(ask))
+        check(
+            ask and ask["title"].startswith("Heal Krogdolf"),
+            "the question names the hero it is about to heal",
+            str(ask),
+        )
+        check(
+            ask and "221/489" in ask["body"] and "spends" in ask["body"],
+            "the question quotes the HP and the price",
+            str(ask),
+        )
+        check(ask and ask["role"] == "alertdialog", "the panel announces itself to a screen reader", str(ask))
+        check(ask and ask["focused"], "confirm is focused, so Enter answers it", str(ask))
+
+        # Escape answers no, exactly like the add form.
+        await page.evaluate(
+            f"""() => {DOCK}.querySelector('.dk-ask').dispatchEvent(
+                new KeyboardEvent('keydown', {{ key: 'Escape', bubbles: true }}))"""
+        )
+        await page.wait_for_timeout(100)
+        check(
+            await page.evaluate(f"() => {DOCK}.querySelector('.dk-ask').hidden"),
+            "Escape closes the question without spending",
+        )
+
+        # Heal-all asks with the GAME's costing line, not one we computed.
+        await page.evaluate(f"() => {DOCK}.querySelector('.dk-healall').click()")
+        await page.wait_for_timeout(150)
+        ask_all = await page.evaluate(
+            f"""() => {{
+                const a = {DOCK}.querySelector('.dk-ask');
+                return a.hidden ? null : {{ title: a.querySelector('h2').textContent,
+                                            body: a.querySelector('.dk-ask-body').textContent }};
+            }}"""
+        )
+        check(
+            ask_all and "79 HP to mend" in ask_all["body"],
+            "heal-all quotes the game's own price back before spending",
+            str(ask_all),
+        )
+        await page.evaluate(f"() => {DOCK}.querySelector('.dk-ask-no').click()")
+        await page.wait_for_timeout(100)
+
+        # Opening the add form must not leave a question stranded behind it.
+        await page.evaluate(f"() => {DOCK}.querySelector('.dk-tools .dk-btn').click()")
+        await page.wait_for_timeout(100)
+        check(
+            await page.evaluate(f"() => {DOCK}.querySelector('.dk-ask').hidden"),
+            "opening the add form closes any open question",
+        )
+        await page.evaluate(f"() => {DOCK}.querySelector('.dk-cancel').click()")
+
+        check(not dialogs, "no native alert, confirm or prompt is ever used", "; ".join(dialogs))
 
         # --- the roster is cached, so navigation never flashes a placeholder --
         cached = await options.evaluate(

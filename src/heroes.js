@@ -38,6 +38,8 @@
   const FRAME_LOAD_MS = 20000;
   const SETTLE_MS = 2500; // React hydration inside the frame
   const STEP_MS = 2000;
+  const VERIFY_MS = 15000; // how long a heal has to show up on the server
+  const VERIFY_EVERY_MS = 900;
 
   // --- parsing (pure) -------------------------------------------------------
 
@@ -284,6 +286,37 @@
 
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  /**
+   * Wait for the SERVER to agree that something changed.
+   *
+   * A heal is a Next.js Server Action followed by a re-render, and that round
+   * trip is not a fixed cost — measured against a single 2s wait, heal-all
+   * reported "did not take" on a heal that had in fact gone through. So poll
+   * /heroes until the change shows up or the window closes, instead of reading
+   * once and calling a slow success a failure.
+   *
+   * A read that fails is treated as "not yet": every in-game click is a full
+   * page load, so a request can be cancelled mid-poll, and that is routine.
+   *
+   * @param {() => Promise<any>} read
+   * @param {(value:any) => boolean} changed
+   * @returns {Promise<any>} the last value read, changed or not
+   */
+  async function pollUntil(read, changed) {
+    const deadline = Date.now() + VERIFY_MS;
+    let latest = null;
+    for (;;) {
+      try {
+        latest = await read();
+        if (changed(latest)) return latest;
+      } catch (e) {
+        if (unloading) return latest;
+      }
+      if (Date.now() >= deadline) return latest;
+      await wait(VERIFY_EVERY_MS);
+    }
+  }
+
   function openFrame(path) {
     const frame = document.createElement("div");
     frame.setAttribute("data-seneschal", "frame"); // never indexed by the scanner
@@ -313,6 +346,25 @@
    * this into an attack.
    */
   const COMMITTING = /lay siege|all in|storm|assault now|attack now|confirm/i;
+
+  /**
+   * If a heal did not take, say what the page is showing instead of shrugging.
+   *
+   * The most likely explanation for a click that changes nothing is a modal
+   * that appeared over it — a second-step confirmation, or the game's
+   * ascension whisper, which intercepts pointer events app-wide. We report it
+   * and stop; we never click through it blind, because on this game an
+   * unidentified button can commit an assault.
+   *
+   * @returns {string} a short description, or "" if nothing is in the way
+   */
+  function blockedBy(doc) {
+    if (!doc || !doc.querySelector) return "";
+    const modal = doc.querySelector('[role="dialog"], [role="alertdialog"]');
+    if (!modal) return "";
+    const text = visibleText(modal).slice(0, 90);
+    return text ? `a dialog is in the way: "${text}"` : "a dialog is in the way";
+  }
 
   function clickByText(doc, matcher, what) {
     const btn = [...doc.querySelectorAll("button, a[href]")].find((b) => matcher(visibleText(b)));
@@ -379,12 +431,22 @@
 
       const cost = healBtn.getAttribute("title");
       healBtn.click();
-      await wait(STEP_MS);
 
-      // Verify against the server rather than trusting the click.
-      const after = (await loadHeroes()).find((h) => h.name === heroName);
-      const healed = after && after.hp > before.hp;
-      return { healed, cost, before: before.hp, after: after ? after.hp : null, maxHp: before.maxHp };
+      // Verify against the server rather than trusting the click, and give it
+      // as long as the round trip actually takes.
+      const after = await pollUntil(
+        async () => (await loadHeroes()).find((h) => h.name === heroName),
+        (h) => Boolean(h && h.hp > before.hp)
+      );
+      const healed = Boolean(after && after.hp > before.hp);
+      return {
+        healed,
+        cost,
+        before: before.hp,
+        after: after ? after.hp : null,
+        maxHp: before.maxHp,
+        blocked: healed ? false : blockedBy(doc),
+      };
     } finally {
       frame.close();
     }
@@ -413,11 +475,22 @@
       if (!button) throw new Error("no heal-all button — is anyone actually wounded?");
       if (button.disabled) throw new Error("the heal-all button is disabled");
       button.click();
-      await wait(STEP_MS);
 
-      const after = await loadHeroes();
-      const totalAfter = after.reduce((sum, h) => sum + h.hp, 0);
-      return { healed: totalAfter > totalBefore, gained: totalAfter - totalBefore, wounded: hurt.length };
+      // Heal-all brews the draughts it needs and then spends them, so it is the
+      // SLOWEST action here — this is the one that a fixed wait misread as a
+      // failure while the heal was still in flight.
+      const after = await pollUntil(
+        () => loadHeroes(),
+        (roster) => Boolean(roster && roster.reduce((sum, h) => sum + h.hp, 0) > totalBefore)
+      );
+      const totalAfter = (after || before).reduce((sum, h) => sum + h.hp, 0);
+      const healed = totalAfter > totalBefore;
+      return {
+        healed,
+        gained: totalAfter - totalBefore,
+        wounded: hurt.length,
+        blocked: healed ? false : blockedBy(doc),
+      };
     } finally {
       frame.close();
     }
@@ -495,11 +568,15 @@
       const use = [...panel.querySelectorAll("button")].find((b) => /USE ON HERO/i.test(flatten(b)));
       if (!use || use.disabled) throw new Error(`USE ON HERO is unavailable for ${wanted.name}`);
       use.click();
-      await wait(STEP_MS);
 
-      const after = (await loadHeroes()).find((h) => h.name === heroName);
+      const after = await pollUntil(
+        async () => (await loadHeroes()).find((h) => h.name === heroName),
+        (h) => Boolean(h && h.hp > before.hp)
+      );
+      const healed = Boolean(after && after.hp > before.hp);
       return {
-        healed: Boolean(after && after.hp > before.hp),
+        healed,
+        blocked: healed ? false : blockedBy(doc),
         elixir: wanted.name,
         brewed: state.held < 1,
         before: before.hp,

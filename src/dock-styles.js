@@ -174,6 +174,40 @@
 }
 .dk-actions .dk-primary { background: #d9a441; border-color: #d9a441; color: #17181b; font-weight: 600; }
 
+/* --- confirm panel -------------------------------------------------------- */
+
+/* Native confirm()/alert() are banned in this extension. They are browser
+   chrome, so they read as Chrome asking rather than us; they cannot be styled
+   or placed; they freeze the page and every timer on it; and under automation
+   they hang the session. Questions are asked here, beside the rail, in the
+   extension's own voice — same side as the add form, opening inward. */
+.dk-ask {
+  width: 226px;
+  padding: 12px;
+  border: 1px solid #2c333f;
+  border-radius: 10px;
+  background: #14181f;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-self: center;
+}
+.dk-ask[hidden] { display: none; }
+.dk-right .dk-ask { margin-right: 10px; }
+.dk-left  .dk-ask { margin-left: 10px; }
+
+.dk-ask h2 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #e6e9ef;
+  letter-spacing: 0.01em;
+}
+.dk-ask-body { margin: 0; font-size: 11.5px; line-height: 1.45; color: #9aa4b2; }
+.dk-ask-body[hidden] { display: none; }
+.dk-ask .dk-ask-yes:focus-visible { outline: 2px solid #f0c674; outline-offset: 2px; }
+
 /* --- hero panel ---------------------------------------------------------- */
 
 .dk-heroes { display: flex; flex-direction: column; gap: 3px; padding-top: 2px; position: relative; }

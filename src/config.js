@@ -77,6 +77,45 @@
     { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
   ];
 
+  /**
+   * Entries an earlier build shipped that were WRONG, and how to repair them.
+   *
+   * Two separate mistakes, both from writing the menu before the nav was
+   * harvested. Four entries were reached by NAME through a door that does not
+   * carry that name, so pressing Craftables walked to /empire and then
+   * announced it could not find a menu entry called "craftables" — the loud
+   * failure working exactly as designed, on a config we had authored badly.
+   * And two paths were invented rather than observed: /inventory and
+   * /craftables are both 404s.
+   *
+   * A stored config is the user's, so this repairs only entries still IDENTICAL
+   * to what we shipped. Change the label, the pattern or the door and it is
+   * yours; we leave it alone and let the loud failure tell you it is broken.
+   */
+  const LEGACY_SEEDS = [
+    { was: { id: "seed-buildings", type: "menu", match: "buildings", door: "/empire" }, now: { path: "/expeditions/buildings" } },
+    { was: { id: "seed-craftables", type: "menu", match: "craftables", door: "/empire" }, now: { path: "/expeditions/buildings/craftables" } },
+    { was: { id: "seed-arena", type: "menu", match: "arena", door: "/expeditions" }, now: { path: "/arena" } },
+    { was: { id: "seed-hunt", type: "menu", match: "hunt", door: "/expeditions" }, now: { path: "/hunt" } },
+    { was: { id: "seed-inventory", type: "url", path: "/inventory" }, now: { path: "/expeditions/inventory" } },
+  ];
+
+  /**
+   * Rewrite one entry if it is an untouched copy of something we got wrong.
+   * Returns the entry unchanged otherwise.
+   */
+  function migrateItem(raw) {
+    if (!raw || typeof raw !== "object") return raw;
+    const rule = LEGACY_SEEDS.find(
+      (r) => r.was.id === raw.id && Object.keys(r.was).every((k) => raw[k] === r.was[k])
+    );
+    if (!rule) return raw;
+    // Always lands as a `url` entry: we now know the address, and one hop beats
+    // walking a door and hunting for a label.
+    const { match, door, ...rest } = raw;
+    return { ...rest, type: "url", path: rule.now.path };
+  }
+
   function defaults() {
     return {
       version: VERSION,
@@ -284,7 +323,7 @@
 
     const seenIds = new Set();
     for (const candidate of rawDock.items.slice(0, MAX_ITEMS)) {
-      const result = validateItem(candidate);
+      const result = validateItem(migrateItem(candidate));
       if (!result.ok) {
         const name = candidate && candidate.label ? `"${candidate.label}"` : "an entry";
         problems.push(`${name} was dropped: ${result.reason}`);
@@ -315,6 +354,7 @@
     matchesPattern,
     classifyPath,
     validateItem,
+    migrateItem,
     normalize,
     newId,
   };
