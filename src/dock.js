@@ -300,14 +300,20 @@
         // One per hero, always — mirroring the game's own panel, which shows a
         // heal for every champion and disables it at full health.
         const damaged = SEN.heroes.isDamaged(hero);
+        // Provisions healing lives inside a siege you are committed to. With
+        // none active there is no panel to click, so say that rather than
+        // offering a button that cannot work.
+        const inSiege = Boolean(this.sieges && this.sieges.length);
         const heal = document.createElement("button");
         heal.type = "button";
         heal.className = "dk-heal";
         heal.textContent = "⛑";
-        heal.disabled = !damaged;
-        heal.title = damaged
-          ? `Heal ${hero.name} (${hero.hp}/${hero.maxHp}) — spends provisions`
-          : `${hero.name} is at full health`;
+        heal.disabled = !damaged || !inSiege;
+        heal.title = !damaged
+          ? `${hero.name} is at full health`
+          : !inSiege
+            ? "No active siege — provisions healing needs one"
+            : `Heal ${hero.name} (${hero.hp}/${hero.maxHp}) — spends provisions`;
         heal.addEventListener("click", () => this._heal(hero, heal));
         row.appendChild(heal);
         box.appendChild(row);
@@ -326,10 +332,18 @@
       const siege = document.createElement("button");
       siege.type = "button";
       siege.className = "dk-siege";
-      const chosen = this.settings.heroes.siege || this.sieges?.[0] || "";
-      siege.textContent = chosen ? `Heals from: ${chosen.replace(/^The /, "")}` : "";
-      siege.title = "Click to draw heals from a different active siege";
-      siege.hidden = !(this.sieges && this.sieges.length > 1);
+      const active = this.sieges || [];
+      const chosen = (active.includes(this.settings.heroes.siege) && this.settings.heroes.siege) || active[0] || "";
+      if (!active.length) {
+        siege.textContent = "No active siege";
+        siege.title = "Provisions healing needs a siege you are committed to";
+        siege.disabled = true;
+        siege.hidden = this.heroes === null;
+      } else {
+        siege.textContent = `Heals from: ${chosen.replace(/^The /, "")}`;
+        siege.title = "Click to draw heals from a different active siege";
+        siege.hidden = active.length < 2 && !chosen;
+      }
       siege.addEventListener("click", () => this._cycleSiege());
       box.appendChild(siege);
 
@@ -356,11 +370,17 @@
         this.refreshing = false;
         this.render();
       } catch (e) {
-        // Quiet on purpose. A failed read means /heroes moved or we are not on
-        // Wardenfall, and a toast on every page load would be noise. Keeping
-        // the stale roster beats replacing it with an error. The loud path is
-        // _heal(), where something was actually at stake.
-        console.warn("[Seneschal] could not read heroes:", e);
+        // A request killed by navigating away is routine, not a fault: every
+        // in-game click is a full page load, so a refresh started moments
+        // earlier is cancelled and rejects as "Failed to fetch". Saying nothing
+        // is correct — the cached roster is still on screen and the next page
+        // will refresh it.
+        //
+        // Anything else stays quiet too, but is logged: a failed read means
+        // /heroes moved or we are not on Wardenfall, and a toast on every page
+        // load would be noise. The loud path is _heal(), where something was
+        // actually at stake.
+        if (!SEN.heroes.isAbort(e)) console.warn("[Seneschal] could not read heroes:", e);
         this.refreshing = false;
         if (!this.heroes) {
           this.heroes = [];

@@ -78,8 +78,47 @@
     return out;
   }
 
-  /** Siege names as the page shows them, e.g. "The Ashvale Bulwark". */
-  function parseSieges(text) {
+  // A siege you are COMMITTED to renders a row of assault locations. A siege
+  // merely named on the page does not — /conquest lists bulwarks you could
+  // attack alongside ones you are in, so matching the name alone reported
+  // three "active" sieges when there were none.
+  const LOCATION = /\bThe (Gate|West Wall|East Wall|Postern Door|Postern|Yard|Inner Wall|Outer Wall|Keep|Regent's Hall)\b/i;
+  const SIEGE_NAME = /The [A-Z][A-Za-z]+ Bulwark/;
+
+  /**
+   * Sieges you are actually in, by name. Empty when there are none — which is
+   * the state that must disable healing rather than offering a siege that
+   * cannot be healed from.
+   *
+   * Needs the DOM, not just text: the tie between a siege's name and its
+   * location buttons is structural.
+   *
+   * @param {Document} doc a parsed /conquest document
+   */
+  function parseActiveSieges(doc) {
+    if (!doc || !doc.querySelectorAll) return [];
+    const buttons = [...doc.querySelectorAll("button")].filter((b) =>
+      LOCATION.test((b.textContent || "").replace(/\s+/g, " "))
+    );
+    if (!buttons.length) return [];
+
+    const names = new Set();
+    for (const button of buttons) {
+      let node = button;
+      for (let hops = 0; node && hops < 10; hops++, node = node.parentElement) {
+        const found = (node.textContent || "").replace(/\s+/g, " ").match(SIEGE_NAME);
+        if (found) {
+          names.add(found[0]);
+          break;
+        }
+      }
+    }
+    // A siege with locations but no readable name is still a real siege.
+    return names.size ? [...names] : ["the active siege"];
+  }
+
+  /** Bulwark names mentioned anywhere — NOT a list of sieges you are in. */
+  function parseSiegeNames(text) {
     const flat = String(text || "").replace(/\s+/g, " ");
     return [...new Set((flat.match(/The [A-Z][A-Za-z]+ Bulwark/g) || []))];
   }
@@ -96,6 +135,20 @@
 
   // --- reading (network, read-only) ----------------------------------------
 
+  // Every in-game navigation is a full page load, which cancels any request in
+  // flight and rejects it as "Failed to fetch". That is routine, not a fault,
+  // so it is tagged and callers stay quiet about it.
+  let unloading = false;
+  // Guarded: the parsers are unit tested in a bare sandbox with no DOM, and
+  // this module has to stay loadable there.
+  if (typeof addEventListener === "function") {
+    addEventListener("pagehide", () => { unloading = true; }, { capture: true });
+  }
+
+  function isAbort(error) {
+    return unloading || (error && (error.name === "AbortError" || /Failed to fetch/i.test(error.message || "")));
+  }
+
   async function fetchText(path) {
     const res = await fetch(path, { credentials: "include" });
     if (!res.ok) throw new Error(`${path} returned ${res.status}`);
@@ -111,7 +164,8 @@
   }
 
   async function loadSieges() {
-    return parseSieges(textOf(await fetchText(CONQUEST_PATH)));
+    const html = await fetchText(CONQUEST_PATH);
+    return parseActiveSieges(new DOMParser().parseFromString(html, "text/html"));
   }
 
   // --- healing (the only mutating path) ------------------------------------
@@ -171,6 +225,12 @@
     if (!before) throw new Error(`${heroName} is not in the roster`);
     if (!isDamaged(before)) throw new Error(`${heroName} is already at full health`);
 
+    // Healing draws on a siege's provisions, so being in one is a precondition
+    // rather than something to discover halfway through the frame dance.
+    if (!(await loadSieges()).length) {
+      throw new Error("no siege is active — provisions healing needs one");
+    }
+
     const frame = openFrame(CONQUEST_PATH);
     try {
       await frame.ready;
@@ -220,7 +280,9 @@
 
   SEN.heroes = {
     parseHeroes,
-    parseSieges,
+    parseActiveSieges,
+    parseSiegeNames,
+    isAbort,
     hpFraction,
     isDamaged,
     loadHeroes,

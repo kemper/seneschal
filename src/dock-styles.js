@@ -251,7 +251,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.dk-siege:hover { color: #f0b750; border-color: #d9a441; }
+.dk-siege:hover:not(:disabled) { color: #f0b750; border-color: #d9a441; }
+.dk-siege:disabled { opacity: 0.6; cursor: default; }
 .dk-siege[hidden] { display: none; }
 
 /* --- toast ---------------------------------------------------------------- */

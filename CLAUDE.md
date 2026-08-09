@@ -120,10 +120,24 @@ with class icon and level (`● 🔮 Krogdolf Lv50`) and an HP row with current/
     Building one means crafting n elixirs then using each, which spends real
     resources and must show a preview before it runs.
 
+**14b. An ACTIVE siege is one rendering assault locations, not one named.**
+`/conquest` names every bulwark you could attack alongside the ones you are
+besieging, so a `The X Bulwark` regex reported three active sieges when there
+were none. The structural signal is a row of location buttons (The Gate / West
+Wall / Postern / Regent's Hall …); tie the name to the siege by walking UP from
+those buttons. You must be committed to a siege before provisions healing is
+possible at all.
+
 **15. Heal and "use" controls only render when a hero is DAMAGED.** With a full
 roster the buttons are `disabled` (siege panel) or absent (elixirs), which is
 why several recon passes came back empty. Plan recon for a moment when someone
 is actually hurt.
+
+**16. "Failed to fetch" on every page is usually just navigation.** Each
+in-game click is a full page load, which cancels requests in flight and rejects
+them as `TypeError: Failed to fetch`. `heroes.js` sets a flag on `pagehide` and
+`isAbort()` classifies these, so callers stay silent. Don't "fix" a cancelled
+request by retrying it — the next page will refresh anyway.
 
 ## Working agreements
 

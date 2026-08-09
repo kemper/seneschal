@@ -1,11 +1,19 @@
 <!doctype html>
-<!-- Mock /conquest with two active sieges, so the siege picker has something
-     to cycle through. -->
+<!-- Mock /conquest with a siege you are committed to.
+
+     Note "The Stormmire Bulwark" is named but has NO assault locations: it is
+     a target, not a siege you are in. Only The Ashvale Bulwark renders
+     locations, so only it counts as active. -->
 <html lang="en"><head><meta charset="utf-8"><title>Sieges</title></head>
 <body>
   <header class="a1b2"><a class="brand" href="/empire">WARDENFALL</a></header>
   <main>
-    <p>The Ashvale Bulwark — starved, strike at will. The Bonekeep Bulwark holds.</p>
-    <button type="button">⚔ 👑 The Regent's Hall</button>
+    <p>The Stormmire Bulwark waits, unbesieged. The Bonekeep Bulwark holds.</p>
+    <section>
+      <h2>The Ashvale Bulwark</h2>
+      <button type="button">✅ 🚪 The Gate</button>
+      <button type="button">⚔ 🧱 The West Wall</button>
+      <button type="button">⚔ 👑 The Regent's Hall</button>
+    </section>
   </main>
 </body></html>

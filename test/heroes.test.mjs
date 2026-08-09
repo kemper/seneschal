@@ -74,8 +74,41 @@ test("empty or junk input yields no heroes rather than throwing", () => {
   }
 });
 
-test("siege names are picked out of the page text, deduped", () => {
+test("bulwark names are picked out of the page text, deduped", () => {
   const text = "The Ashvale Bulwark ... The Ashvale Bulwark ... The Bonekeep Bulwark ... The Stormmire Bulwark";
-  assert.deepEqual(mine(H.parseSieges(text)), ["The Ashvale Bulwark", "The Bonekeep Bulwark", "The Stormmire Bulwark"]);
-  assert.deepEqual(mine(H.parseSieges("")), []);
+  assert.deepEqual(mine(H.parseSiegeNames(text)), ["The Ashvale Bulwark", "The Bonekeep Bulwark", "The Stormmire Bulwark"]);
+  assert.deepEqual(mine(H.parseSiegeNames("")), []);
+});
+
+// The bug this guards: /conquest names every bulwark you COULD attack, so
+// matching names alone reported three active sieges when there were none. A
+// siege you are committed to is the one rendering assault locations.
+const fakeDoc = (html) => {
+  const buttons = [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map((m) => {
+    const text = m[1].replace(/<[^>]*>/g, "");
+    let parent = null;
+    return {
+      textContent: text,
+      get parentElement() { return parent; },
+      set parentElement(p) { parent = p; },
+    };
+  });
+  return { querySelectorAll: () => buttons, __buttons: buttons };
+};
+
+test("no assault locations means no active siege, however many are named", () => {
+  const doc = fakeDoc("<p>The Ashvale Bulwark. The Bonekeep Bulwark.</p><button>SCOUT</button>");
+  assert.deepEqual(mine(H.parseActiveSieges(doc)), []);
+});
+
+test("assault locations mean a siege is active", () => {
+  const doc = fakeDoc("<button>✅ 🚪 The Gate</button><button>⚔ 👑 The Regent's Hall</button>");
+  const out = H.parseActiveSieges(doc);
+  assert.equal(out.length, 1, "one unnamed-but-real siege");
+});
+
+test("a missing or junk document yields no sieges rather than throwing", () => {
+  for (const input of [null, undefined, {}, "text"]) {
+    assert.deepEqual(mine(H.parseActiveSieges(input)), []);
+  }
 });

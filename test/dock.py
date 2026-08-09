@@ -292,10 +292,19 @@ async def main() -> int:
         check(not boxes["overlaps"], "the toast does not cover the menu", str(boxes))
         check(boxes["below"], "the toast sits below the rail", str(boxes))
 
-        await page.wait_for_timeout(3200)  # confirmations clear in 2.6s
+        # Poll rather than sleep a fixed span: the hero refresh runs two fetches
+        # in the background, and a single timed wait races with them. The point
+        # is that a confirmation clears on its own well before a warning's 7s.
+        cleared_ms = None
+        for elapsed in range(0, 5200, 200):
+            if await page.evaluate(f"() => {DOCK}.querySelector('.dk-toast').hidden"):
+                cleared_ms = elapsed
+                break
+            await page.wait_for_timeout(200)
         check(
-            await page.evaluate(f"() => {DOCK}.querySelector('.dk-toast').hidden") is True,
-            "the confirmation toast clears quickly",
+            cleared_ms is not None and cleared_ms < 5000,
+            "the confirmation toast clears on its own, faster than a warning",
+            f"cleared after {cleared_ms}ms",
         )
 
         # Scaffolding, not a behaviour under test: put the fixture back on the
@@ -507,11 +516,6 @@ async def main() -> int:
             "every hero has a heal button",
             str([(h["name"], h["heal"]) for h in heroes]),
         )
-        check(
-            [h["name"] for h in heroes if not h["healDisabled"]] == ["Krogdolf", "Krogsly"],
-            "only damaged heroes' heal buttons are enabled",
-            str([(h["name"], h["healDisabled"]) for h in heroes]),
-        )
         bars = await page.evaluate(
             f"() => [...{DOCK}.querySelectorAll('.dk-bar-fill')].map(b => b.style.width)"
         )
@@ -523,9 +527,20 @@ async def main() -> int:
 
         siege = await page.evaluate(
             f"() => {{ const b = {DOCK}.querySelector('.dk-siege');"
-            "  return b ? {{ text: b.textContent, hidden: b.hidden }} : null; }}".replace("{{", "{").replace("}}", "}")
+            "  return b ? { text: b.textContent, hidden: b.hidden, disabled: b.disabled } : null; }"
         )
-        check(siege is not None and not siege["hidden"], "the siege picker shows when more than one is active", str(siege))
+        # The fixture names three bulwarks but only ONE renders assault
+        # locations. Naming alone used to be read as three active sieges.
+        check(
+            siege is not None and siege["text"] == "Heals from: Ashvale Bulwark",
+            "only the siege you are committed to counts as active",
+            str(siege),
+        )
+        check(
+            [h["name"] for h in heroes if not h["healDisabled"]] == ["Krogdolf", "Krogsly"],
+            "with a siege active, only damaged heroes' heals are enabled",
+            str([(h["name"], h["healDisabled"]) for h in heroes]),
+        )
 
         # --- the roster is cached, so navigation never flashes a placeholder --
         cached = await options.evaluate(
