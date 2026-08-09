@@ -34,6 +34,7 @@
 
   const HEROES_PATH = "/heroes";
   const CONQUEST_PATH = "/conquest";
+  const CRAFTABLES_PATH = "/expeditions/buildings/craftables";
   const FRAME_LOAD_MS = 20000;
   const SETTLE_MS = 2500; // React hydration inside the frame
   const STEP_MS = 2000;
@@ -162,6 +163,64 @@
     return { available: true, label, summary };
   }
 
+  // --- elixirs --------------------------------------------------------------
+
+  // The craftables page holds one card per elixir. Each card knows what it
+  // mends, what brewing costs, and how many you hold; a separate "Mend a Hero"
+  // block appears for each elixir you actually hold, carrying the hero picker
+  // and USE ON HERO. The two are tied together by the MEND AMOUNT, which is
+  // the stable, meaningful key — +10, +25, +50.
+  const ELIXIRS = [
+    { key: "salveroot", name: "Salveroot Tonic", icon: "🧪" },
+    { key: "knitbone", name: "Knitbone Draught", icon: "🍵" },
+    { key: "wardenbalm", name: "Wardenbalm Elixir", icon: "💧" },
+  ];
+
+  const rendered = (el) => !/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName);
+  const flatten = (el) => (el.textContent || "").replace(/\s+/g, " ").trim();
+
+  /**
+   * Read every elixir's state off the craftables page.
+   *
+   * @param {Document} doc
+   * @returns {Array<{key,name,icon,mend,cost,held,canCraft,canUse,reason}>}
+   */
+  function parseElixirs(doc) {
+    if (!doc || !doc.querySelectorAll) return [];
+    const all = [...doc.querySelectorAll("*")].filter(rendered);
+
+    return ELIXIRS.map((elixir) => {
+      // Smallest rendered element naming it — the card's title. Taking the
+      // smallest matters: the page ships a <script> flight payload that
+      // mentions every name, and any ancestor would swallow the whole page.
+      const naming = all.filter((el) => flatten(el).includes(elixir.name));
+      if (!naming.length) return { ...elixir, mend: null, cost: "", held: 0, canCraft: false, canUse: false, reason: "not on the page" };
+      const title = naming.reduce((a, b) => (flatten(b).length < flatten(a).length ? b : a));
+
+      let card = title;
+      for (let hops = 0; hops < 10 && card; hops++, card = card.parentElement) {
+        if ([...card.querySelectorAll("button")].some((b) => /^CRAFT$/i.test(flatten(b)))) break;
+      }
+      const text = card ? flatten(card) : "";
+      const craft = card ? [...card.querySelectorAll("button")].find((b) => /^CRAFT$/i.test(flatten(b))) : null;
+
+      const mend = Number((text.match(/mend \+(\d+) HP/i) || [])[1]) || null;
+      const held = Number((text.match(/held:?\s*(\d+)/i) || [])[1]) || 0;
+      const cost = (text.match(/([\d]+ [\w-]+(?: \+ [\d]+ [\w-]+)*)\s*CRAFT/i) || [])[1] || "";
+      const canCraft = Boolean(craft && !craft.disabled);
+
+      return {
+        ...elixir,
+        mend,
+        cost,
+        held,
+        canCraft,
+        canUse: held > 0 || canCraft,
+        reason: held > 0 ? "" : canCraft ? `will brew one for ${cost}` : "cannot brew — not enough materials",
+      };
+    });
+  }
+
   /** Fraction of max HP remaining, clamped. Used for the bar and its colour. */
   function hpFraction(hero) {
     if (!hero || !hero.maxHp) return 0;
@@ -209,6 +268,11 @@
       heroes: parseHeroes(doc.body.textContent || ""),
       healAll: parseHealAll(doc),
     };
+  }
+
+  async function loadElixirs() {
+    const html = await fetchText(CRAFTABLES_PATH);
+    return parseElixirs(new DOMParser().parseFromString(html, "text/html"));
   }
 
   async function loadSieges() {
@@ -360,46 +424,88 @@
   }
 
   /**
-   * Spend one held elixir on a hero, via the craftables page: choose them in
-   * the hero dropdown, then USE ON HERO.
+   * Heal a hero with a NAMED elixir, brewing one first if none is held.
    *
-   * React tracks input values, so the dropdown has to be set through the
-   * native setter and given a real change event — assigning `.value` alone
-   * leaves React believing nothing was chosen.
+   * Which elixir is never inferred: a single "heal" button once spent a
+   * Wardenbalm (+50 HP, the scarcest) closing a 79 HP gap, which is exactly
+   * the ambiguity this signature removes.
+   *
+   * React tracks input values, so the hero dropdown is set through the native
+   * setter and given a real change event — assigning `.value` alone leaves
+   * React believing nothing was chosen.
+   *
+   * @param {{heroName:string, key:string}} opts  `key` is an ELIXIRS key
    */
-  async function healWithElixir({ heroName }) {
+  async function healWithElixir({ heroName, key }) {
+    const wanted = ELIXIRS.find((e) => e.key === key);
+    if (!wanted) throw new Error(`unknown elixir "${key}"`);
+
     const before = (await loadHeroes()).find((h) => h.name === heroName);
     if (!before) throw new Error(`${heroName} is not in the roster`);
     if (!isDamaged(before)) throw new Error(`${heroName} is already at full health`);
 
-    const frame = openFrame("/expeditions/buildings/craftables");
+    const frame = openFrame(CRAFTABLES_PATH);
     try {
       await frame.ready;
       await wait(SETTLE_MS);
       const doc = frame.el.contentDocument;
       if (!doc) throw new Error("could not reach the craftables page");
 
-      const select = [...doc.querySelectorAll("select")].find((s) =>
-        [...s.options].some((o) => o.textContent.includes(heroName) && /\d+\s*\/\s*\d+/.test(o.textContent))
+      const state = parseElixirs(doc).find((e) => e.key === key);
+      if (!state || !state.mend) throw new Error(`${wanted.name} is not on the craftables page`);
+
+      // Brew one first if the shelf is empty. This spends materials, which is
+      // why the caller has already quoted `cost` to the user.
+      if (state.held < 1) {
+        if (!state.canCraft) throw new Error(`no ${wanted.name} held, and not enough materials to brew one`);
+        const naming = [...doc.querySelectorAll("*")].filter((el) => rendered(el) && flatten(el).includes(wanted.name));
+        const titleEl = naming.reduce((a, b) => (flatten(b).length < flatten(a).length ? b : a));
+        let card = titleEl;
+        for (let hops = 0; hops < 10 && card; hops++, card = card.parentElement) {
+          if ([...card.querySelectorAll("button")].some((b) => /^CRAFT$/i.test(flatten(b)))) break;
+        }
+        const craft = [...card.querySelectorAll("button")].find((b) => /^CRAFT$/i.test(flatten(b)));
+        if (!craft || craft.disabled) throw new Error(`cannot brew ${wanted.name}`);
+        craft.click();
+        await wait(STEP_MS);
+      }
+
+      // The "Mend a Hero · +N HP" block for THIS elixir, keyed on its mend.
+      const blocks = [...doc.querySelectorAll("*")].filter(
+        (el) => rendered(el) && new RegExp(`Mend a Hero\\s*·?\\s*\\+${state.mend} HP`, "i").test(flatten(el))
       );
-      if (!select) throw new Error("no elixir is held — craft one first");
+      if (!blocks.length) throw new Error(`no "use" control for ${wanted.name} — brewing may not have taken`);
+      const block = blocks.reduce((a, b) => (flatten(b).length < flatten(a).length ? b : a));
+      let panel = block;
+      for (let hops = 0; hops < 10 && panel; hops++, panel = panel.parentElement) {
+        if (panel.querySelector && panel.querySelector("select") && [...panel.querySelectorAll("button")].some((b) => /USE ON HERO/i.test(flatten(b)))) break;
+      }
+      if (!panel) throw new Error(`could not find the hero picker for ${wanted.name}`);
+
+      const select = panel.querySelector("select");
       const option = [...select.options].find((o) => o.textContent.includes(heroName));
+      if (!option) throw new Error(`${heroName} is not offered in the hero picker`);
 
       const view = frame.el.contentWindow;
       const setValue = Object.getOwnPropertyDescriptor(view.HTMLSelectElement.prototype, "value").set;
       setValue.call(select, option.value);
       select.dispatchEvent(new view.Event("change", { bubbles: true }));
-      await wait(600);
+      await wait(700);
 
-      const use = [...doc.querySelectorAll("button")].find((b) => /USE ON HERO/i.test(b.textContent || ""));
-      if (!use) throw new Error("no USE ON HERO button — no elixir held");
-      if (use.disabled) throw new Error("USE ON HERO is disabled");
+      const use = [...panel.querySelectorAll("button")].find((b) => /USE ON HERO/i.test(flatten(b)));
+      if (!use || use.disabled) throw new Error(`USE ON HERO is unavailable for ${wanted.name}`);
       use.click();
       await wait(STEP_MS);
 
       const after = (await loadHeroes()).find((h) => h.name === heroName);
-      return { healed: Boolean(after && after.hp > before.hp), before: before.hp,
-               after: after ? after.hp : null, maxHp: before.maxHp };
+      return {
+        healed: Boolean(after && after.hp > before.hp),
+        elixir: wanted.name,
+        brewed: state.held < 1,
+        before: before.hp,
+        after: after ? after.hp : null,
+        maxHp: before.maxHp,
+      };
     } finally {
       frame.close();
     }
@@ -408,7 +514,10 @@
   SEN.heroes = {
     parseHeroes,
     parseHealAll,
+    parseElixirs,
+    loadElixirs,
     loadRoster,
+    ELIXIRS,
     healAll,
     healWithElixir,
     parseActiveSieges,

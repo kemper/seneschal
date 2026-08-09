@@ -145,6 +145,15 @@ them as `TypeError: Failed to fetch`. `heroes.js` sets a flag on `pagehide` and
 `isAbort()` classifies these, so callers stay silent. Don't "fix" a cancelled
 request by retrying it — the next page will refresh anyway.
 
+**17. Never let one button pick which resource to spend.** A single `⛑` heal
+chose the method itself and spent a Wardenbalm (+50 HP, the scarcest, needing
+wardenstone) closing a 79 HP wound. Every spending action now names its method
+and quotes its price BEFORE it runs — one button per method, each with a title
+giving the elixir, what it mends, how many you hold, and what brewing would
+cost. Elixir cards are keyed to their "Mend a Hero · +N HP" use-block by the
+MEND AMOUNT; the hero picker and USE ON HERO only exist for an elixir you
+actually hold, so a held count of 0 means CRAFT first.
+
 ## Working agreements
 
 - **Verify in a browser; do not trust reading.** Every bug so far was caught by

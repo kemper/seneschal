@@ -91,6 +91,7 @@
       this.settings = SEN.config.defaults();
       this.heroes = null;   // null = nothing known yet, [] = read and empty
       this.healAll = null;
+      this.elixirs = [];
       this.sieges = null;
       this.refreshing = false;
       this.watcher = null;
@@ -137,6 +138,7 @@
       if (!cached || !Array.isArray(cached.heroes)) return;
       this.heroes = cached.heroes;
       this.healAll = cached.healAll || null;
+      this.elixirs = Array.isArray(cached.elixirs) ? cached.elixirs : [];
       this.sieges = Array.isArray(cached.sieges) ? cached.sieges : [];
     }
 
@@ -234,7 +236,6 @@
       const { side, collapsed, enabled, items } = this.settings.dock;
       this.wrap.className = `dk-wrap dk-${side === "left" ? "left" : "right"}` + (collapsed ? " dk-collapsed" : "");
       this.wrap.hidden = !enabled;
-      this.toastEl.className = `dk-toast dk-toast-${side === "left" ? "left" : "right"}`;
       this.tab.textContent = collapsed ? "MENU" : "HIDE";
       this.tab.setAttribute("aria-expanded", String(!collapsed));
 
@@ -318,25 +319,6 @@
           this._span("dk-hero-hp", `${hero.hp}/${hero.maxHp}`)
         );
 
-        // One per hero, always — mirroring the game's own panel, which shows a
-        // heal for every champion and disables it at full health.
-        const damaged = SEN.heroes.isDamaged(hero);
-        // Provisions healing lives inside a siege you are committed to. With
-        // none active there is no panel to click, so say that rather than
-        // offering a button that cannot work.
-        const inSiege = Boolean(this.sieges && this.sieges.length);
-        const heal = document.createElement("button");
-        heal.type = "button";
-        heal.className = "dk-heal";
-        heal.textContent = "⛑";
-        heal.disabled = !damaged;
-        heal.title = !damaged
-          ? `${hero.name} is at full health`
-          : inSiege
-            ? `Heal ${hero.name} (${hero.hp}/${hero.maxHp}) — spends siege provisions`
-            : `Heal ${hero.name} (${hero.hp}/${hero.maxHp}) — spends a held elixir`;
-        heal.addEventListener("click", () => this._heal(hero, heal));
-        row.appendChild(heal);
         box.appendChild(row);
 
         const bar = document.createElement("div");
@@ -347,6 +329,9 @@
         fill.style.width = `${Math.round(frac * 100)}%`;
         bar.appendChild(fill);
         box.appendChild(bar);
+
+        // One button per way of healing, but only for someone who needs it.
+        if (SEN.heroes.isDamaged(hero)) box.appendChild(this._healMethods(hero));
       }
 
       // Which siege the heal acts on. Hidden unless there is a real choice.
@@ -372,6 +357,63 @@
     }
 
     /**
+     * One button per way of healing, each naming itself and its price.
+     *
+     * A single "heal" button once spent the scarcest elixir — a Wardenbalm,
+     * +50 HP — closing a 79 HP wound, because nothing told the user which
+     * method it would pick. Naming each method is the fix: the choice is
+     * always theirs, and always priced before it is made.
+     */
+    _healMethods(hero) {
+      const gap = hero.maxHp - hero.hp;
+      const strip = document.createElement("div");
+      strip.className = "dk-methods";
+
+      const add = (glyph, title, enabled, run) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "dk-method";
+        button.textContent = glyph;
+        button.title = title;
+        button.disabled = !enabled;
+        if (enabled) button.addEventListener("click", () => run(button));
+        strip.appendChild(button);
+      };
+
+      // Siege provisions: cheap, but only inside a siege you are committed to.
+      const siege = (this.sieges || []).includes(this.settings.heroes.siege)
+        ? this.settings.heroes.siege
+        : (this.sieges || [])[0] || "";
+      add(
+        "⛑",
+        siege
+          ? `Siege provisions · from ${siege} · spends 4 of this champion's resource`
+          : "Siege provisions · needs a siege you are committed to",
+        Boolean(siege),
+        (button) => this._heal(hero, button, { kind: "siege", siege })
+      );
+
+      for (const elixir of this.elixirs || []) {
+        // Flag an elixir that would be wasted on a small wound — exactly the
+        // mistake the old single button made.
+        const overkill = elixir.mend && elixir.mend > gap + 15 ? " · more than this wound needs" : "";
+        const supply =
+          elixir.held > 0
+            ? `you hold ${elixir.held}`
+            : elixir.canCraft
+              ? `none held — brews one for ${elixir.cost}`
+              : "none held, and not enough materials to brew";
+        add(
+          elixir.icon,
+          `${elixir.name} · +${elixir.mend} HP · ${supply}${overkill}`,
+          Boolean(elixir.canUse),
+          (button) => this._heal(hero, button, { kind: "elixir", elixir })
+        );
+      }
+      return strip;
+    }
+
+    /**
      * Fetch the roster in the background. Whatever is already on screen stays
      * there, dimmed, until this lands — so navigating between pages never
      * blanks the panel.
@@ -388,7 +430,17 @@
         this.heroes = roster.heroes;
         this.healAll = roster.healAll;
         this.sieges = sieges;
-        await store.set(HEROES_KEY, { heroes: roster.heroes, healAll: roster.healAll, sieges, at: Date.now() });
+        // Only worth a third request when there is actually something to heal.
+        this.elixirs = roster.heroes.some(SEN.heroes.isDamaged)
+          ? await SEN.heroes.loadElixirs().catch(() => [])
+          : [];
+        await store.set(HEROES_KEY, {
+          heroes: roster.heroes,
+          healAll: roster.healAll,
+          elixirs: this.elixirs,
+          sieges,
+          at: Date.now(),
+        });
         this.refreshing = false;
         this.render();
       } catch (e) {
@@ -438,31 +490,34 @@
      * says exactly what it cost, and VERIFIES against the server rather than
      * assuming the click worked.
      */
-    async _heal(hero, button) {
+    async _heal(hero, button, method) {
       // The button is disabled at full health, but the guard is repeated here
       // so a stale row cannot spend provisions on a hero who does not need it.
       if (!SEN.heroes.isDamaged(hero)) {
         this.toast(`${hero.name} is already at full health.`);
         return;
       }
-      // Two routes, and which one is available depends on the game's state:
-      // siege provisions are cheap but need a siege you are committed to;
-      // otherwise fall back to spending an elixir you already hold.
-      const inSiege = Boolean(this.sieges && this.sieges.length);
-      const siege = (this.sieges || []).includes(this.settings.heroes.siege)
-        ? this.settings.heroes.siege
-        : (this.sieges || [])[0] || "";
-      const cost = inSiege ? `siege provisions on ${siege}` : "one held elixir";
+
+      // The method was chosen by the user, never inferred — and it is priced
+      // in the confirm, including when an elixir has to be brewed first.
+      const cost =
+        method.kind === "siege"
+          ? `4 provisions from ${method.siege}`
+          : method.elixir.held > 0
+            ? `one ${method.elixir.name} (+${method.elixir.mend} HP)`
+            : `${method.elixir.cost} to brew a ${method.elixir.name} (+${method.elixir.mend} HP)`;
       if (!confirm(`Heal ${hero.name} (${hero.hp}/${hero.maxHp})?\n\nThis spends ${cost}.`)) return;
 
       button.disabled = true;
       button.classList.add("dk-busy");
       try {
-        const out = inSiege
-          ? await SEN.heroes.heal({ heroName: hero.name, siege })
-          : await SEN.heroes.healWithElixir({ heroName: hero.name });
+        const out =
+          method.kind === "siege"
+            ? await SEN.heroes.heal({ heroName: hero.name, siege: method.siege })
+            : await SEN.heroes.healWithElixir({ heroName: hero.name, key: method.elixir.key });
         if (out.healed) {
-          this.toast(`${hero.name}: ${out.before} → ${out.after}/${out.maxHp}. ${out.cost || ""}`.trim());
+          const how = out.elixir ? ` with ${out.brewed ? "a freshly brewed " : ""}${out.elixir}` : "";
+          this.toast(`${hero.name}: ${out.before} → ${out.after}/${out.maxHp}${how}.`);
         } else {
           // Loud: a click that changed nothing means the button moved, the
           // siege ended, or the server refused.

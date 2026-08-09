@@ -259,6 +259,29 @@
 .dk-siege:disabled { opacity: 0.6; cursor: default; }
 .dk-siege[hidden] { display: none; }
 
+/* One button per healing method, under the hero's bar. Icons only, but every
+   one carries a title naming the elixir, what it mends, what you hold and what
+   brewing would cost. */
+.dk-methods { display: flex; gap: 3px; margin: 0 10px 4px; flex-wrap: wrap; }
+.dk-left .dk-methods { justify-content: flex-end; }
+.dk-wrap.dk-collapsed .dk-methods { margin: 0 4px 3px; justify-content: center; }
+
+.dk-method {
+  flex: none;
+  border: 1px solid #3c4553;
+  border-radius: 5px;
+  background: #1d2430;
+  color: #cbd2dd;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.dk-method:hover:not(:disabled) { border-color: #d9a441; color: #f0b750; }
+.dk-method:disabled { opacity: 0.3; cursor: default; }
+.dk-method.dk-busy { color: #d9a441; border-color: #d9a441; }
+
 /* Heal all: the game's own control, mirrored. Reads as an action, and carries
    the game's own price quote underneath rather than one we computed. */
 .dk-healall {
@@ -304,6 +327,8 @@
 .dk-toast {
   position: fixed;
   bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
   max-width: min(360px, 46vw);
   z-index: 2147483001;
   padding: 8px 13px;
@@ -316,8 +341,6 @@
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
 }
 .dk-toast[hidden] { display: none; }
-.dk-toast-right { right: 16px; }
-.dk-toast-left  { left: 16px; }
 
 /* Failures are LOUD by design: a pattern that stops matching after a patch has
    to be visible, not a button that quietly does nothing. Warnings are coloured

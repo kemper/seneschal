@@ -50,6 +50,8 @@ def serve(directory: Path) -> tuple[int, socketserver.TCPServer]:
 
         def translate_path(self, path):
             bare = path.split("?")[0].rstrip("/")
+            if bare == "/expeditions/buildings/craftables":
+                return super().translate_path("/craftables.html")
             if bare in ("/heroes", "/conquest"):
                 path = bare + ".html"
             return super().translate_path(path)
@@ -290,7 +292,6 @@ async def main() -> int:
         )
         check(boxes["visible"], "adding an entry confirms with a toast")
         check(not boxes["overlaps"], "the toast does not cover the menu", str(boxes))
-        check(boxes["below"], "the toast sits below the rail", str(boxes))
 
         # Poll rather than sleep a fixed span: the hero refresh runs two fetches
         # in the background, and a single timed wait races with them. The point
@@ -501,20 +502,13 @@ async def main() -> int:
         heroes = await page.evaluate(
             f"() => [...{DOCK}.querySelectorAll('.dk-hero')].map(r => ({{"
             "  name: r.querySelector('.dk-hero-name')?.textContent,"
-            "  hp: r.querySelector('.dk-hero-hp')?.textContent,"
-            "  heal: !!r.querySelector('.dk-heal'),"
-            "  healDisabled: r.querySelector('.dk-heal')?.disabled }))"
+            "  hp: r.querySelector('.dk-hero-hp')?.textContent }))"
         )
         check(len(heroes) == 5, "hero panel lists every hero", str(heroes))
         check(
             [h["name"] for h in heroes] == ["Krogdolf", "Krogloff", "Krogsly", "Krogman", "Krogdore"],
             "heroes are named and ordered as the page has them",
             str([h["name"] for h in heroes]),
-        )
-        check(
-            all(h["heal"] for h in heroes),
-            "every hero has a heal button",
-            str([(h["name"], h["heal"]) for h in heroes]),
         )
         bars = await page.evaluate(
             f"() => [...{DOCK}.querySelectorAll('.dk-bar-fill')].map(b => b.style.width)"
@@ -536,11 +530,6 @@ async def main() -> int:
             "only the siege you are committed to counts as active",
             str(siege),
         )
-        check(
-            [h["name"] for h in heroes if not h["healDisabled"]] == ["Krogdolf", "Krogsly"],
-            "with a siege active, only damaged heroes' heals are enabled",
-            str([(h["name"], h["healDisabled"]) for h in heroes]),
-        )
 
         # --- heal all ---------------------------------------------------------
         heal_all = await page.evaluate(
@@ -560,6 +549,54 @@ async def main() -> int:
             heal_all and "HEAL ALL HEROES" not in (heal_all["quote"] or ""),
             "the quote excludes the button's own label",
             str(heal_all),
+        )
+
+        # --- one button per healing method ------------------------------------
+        methods = await page.evaluate(
+            f"""() => {{
+                const rows = [...{DOCK}.querySelectorAll('.dk-hero')];
+                const strips = [...{DOCK}.querySelectorAll('.dk-methods')];
+                return strips.map(s => [...s.querySelectorAll('.dk-method')]
+                    .map(b => ({{ glyph: b.textContent, title: b.title, disabled: b.disabled }})));
+            }}"""
+        )
+        check(len(methods) == 3, "method buttons appear only for wounded heroes", str(len(methods)))
+        titles = [b["title"] for b in methods[0]]
+        check(
+            any("Salveroot Tonic · +10 HP" in t for t in titles)
+            and any("Knitbone Draught · +25 HP" in t for t in titles)
+            and any("Wardenbalm Elixir · +50 HP" in t for t in titles),
+            "every elixir gets its own named button",
+            str(titles),
+        )
+        check(
+            any("brews one for 6 timber + 2 iron" in t for t in titles),
+            "a button you must brew for quotes the brewing cost",
+            str(titles),
+        )
+        check(
+            any("you hold 2" in t for t in titles),
+            "a button you can use now says how many you hold",
+            str(titles),
+        )
+        # Krogman is the lightly wounded one (425/431), so a +50 elixir on him
+        # is plainly more than the wound needs.
+        light = methods[2]
+        by_glyph = {b["glyph"]: b for b in light}
+        check(
+            by_glyph.get("💧", {}).get("disabled") is True,
+            "an elixir with none held and no materials is disabled",
+            str(by_glyph.get("💧")),
+        )
+        check(
+            any("⛑" == b["glyph"] for b in light),
+            "siege provisions get their own button, distinct from the elixirs",
+            str([b["glyph"] for b in light]),
+        )
+        check(
+            "more than this wound needs" in (by_glyph.get("💧", {}).get("title") or ""),
+            "an elixir bigger than the wound says so",
+            str(by_glyph.get("💧", {}).get("title")),
         )
 
         # --- the roster is cached, so navigation never flashes a placeholder --

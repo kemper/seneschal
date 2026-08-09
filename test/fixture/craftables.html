@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- Mock craftables. Shapes copied from the live page: each elixir is a card
+     with a mend amount, a brew cost, a held count and a CRAFT button. The
+     "Mend a Hero · +N HP" block with its hero picker only exists for an elixir
+     you actually hold — here, only the Knitbone Draught. -->
+<html lang="en"><head><meta charset="utf-8"><title>Craftables</title></head>
+<body>
+  <header class="a1b2"><a class="brand" href="/empire">WARDENFALL</a></header>
+  <main>
+    <div class="c"><span>🧪 Salveroot Tonic</span>
+      <p>Use it on your Hero to mend +10 HP.</p>
+      <span>6 timber + 2 iron</span><button type="button">CRAFT</button><span>held: 0</span></div>
+
+    <div class="c"><span>🍵 Knitbone Draught</span>
+      <p>Use it on your Hero to mend +25 HP.</p>
+      <span>12 timber + 6 iron</span><button type="button">CRAFT</button><span>held: 2</span></div>
+
+    <div class="c"><span>💧 Wardenbalm Elixir</span>
+      <p>Use it on your Hero to mend +50 HP.</p>
+      <span>2 wardenstone + 2 Warden-Resin</span><button type="button" disabled>CRAFT</button>
+      <span>held: 0</span><span>Not enough wardenstone.</span></div>
+
+    <div class="use"><span>Mend a Hero · +25 HP</span>
+      <select>
+        <option value="h1">Krogdolf — 221/489 HP</option>
+        <option value="h2">Krogloff — 459/459 HP · full</option>
+        <option value="h3">Krogsly — 90/382 HP</option>
+      </select>
+      <button type="button">USE ON HERO</button></div>
+  </main>
+</body></html>

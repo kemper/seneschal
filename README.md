@@ -192,9 +192,16 @@ draughts it needs and prices the job itself — the panel shows that quote
 verbatim (`1 wounded · 79 HP to mend · brews 4 draughts: 48 timber · 24 iron`)
 rather than recomputing it, so the number you confirm is the game's own.
 
-A **heal button** sits next to every hero, enabled only when they are hurt.
-Inside a siege it spends siege provisions; otherwise it spends an elixir you
-hold, chosen through the craftables page's own hero picker.
+Under each wounded hero sits **one button per healing method** — siege
+provisions, and one for each elixir — because a single "heal" button has to
+choose for you, and choosing badly is expensive. (It once spent a Wardenbalm,
++50 HP and the scarcest of them, closing a 79 HP wound.)
+
+Every button says what it is on hover: `Knitbone Draught · +25 HP · you hold 2`,
+or `Salveroot Tonic · +10 HP · none held — brews one for 6 timber + 2 iron`, and
+flags an elixir that is `more than this wound needs`. One with nothing held and
+no materials to brew is disabled. The confirm repeats the price, including the
+brewing cost when one has to be made first.
 Pressing it asks first, then drives the game's own button — in a hidden
 same-origin iframe, so it works from anywhere without navigating you to the
 siege page.
@@ -259,11 +266,11 @@ node --test test/learned.test.mjs   # 11 retention-policy unit tests
 node --test test/config.test.mjs    # 27 settings-model unit tests
 node --test test/heroes.test.mjs    # 14 hero, siege and heal-all parsers
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 57 checks, quick menu + hero panel
+python3 test/dock.py                # 61 checks, quick menu + hero panel
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 151 pass. The Python tests need Playwright; `test/chromium_path.py` locates
+All 155 pass. The Python tests need Playwright; `test/chromium_path.py` locates
 a Chromium on either Linux or macOS, overridable with `SENESCHAL_CHROMIUM`.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the
