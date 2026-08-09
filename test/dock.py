@@ -542,6 +542,26 @@ async def main() -> int:
             str([(h["name"], h["healDisabled"]) for h in heroes]),
         )
 
+        # --- heal all ---------------------------------------------------------
+        heal_all = await page.evaluate(
+            f"""() => {{
+                const b = {DOCK}.querySelector('.dk-healall');
+                const q = {DOCK}.querySelector('.dk-quote');
+                return b ? {{ text: b.textContent, title: b.title, quote: q ? q.textContent : null }} : null;
+            }}"""
+        )
+        check(heal_all is not None, "the heal-all control is mirrored from the game", str(heal_all))
+        check(
+            heal_all and "79 HP to mend" in (heal_all["quote"] or ""),
+            "the game's own price quote is shown, not one we computed",
+            str(heal_all),
+        )
+        check(
+            heal_all and "HEAL ALL HEROES" not in (heal_all["quote"] or ""),
+            "the quote excludes the button's own label",
+            str(heal_all),
+        )
+
         # --- the roster is cached, so navigation never flashes a placeholder --
         cached = await options.evaluate(
             """async () => {

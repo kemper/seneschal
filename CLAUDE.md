@@ -116,9 +116,15 @@ with class icon and level (`● 🔮 Krogdolf Lv50`) and an HP row with current/
 
     Wardenbalm also rouses a gravely-wounded champion to march at once.
     Craftables page buttons: `CRAFT · SMELT · USE ON HERO · USE VIAL · TRADE ·
-    REFINE · BUY`. **There is NO "heal all" button** — searched, none exists.
-    Building one means crafting n elixirs then using each, which spends real
-    resources and must show a preview before it runs.
+    REFINE · BUY`. `USE ON HERO` is paired with a hero `<select>` whose options
+    read `Krogdolf — 410/489 HP`, and appears for elixirs you actually hold.
+
+  - *Heal all*: `[ 💚 HEAL ALL HEROES ]` on `/heroes` DOES exist — an earlier
+    note here said it did not, because it only renders when someone is wounded.
+    It prices itself: `1 wounded · 79 HP to mend · brews 4 draughts: 48 timber ·
+    24 iron`. **Quote that line, never recompute it** — the game picks the
+    elixirs and does the arithmetic, and a second implementation would
+    eventually disagree with it.
 
 **14b. An ACTIVE siege is one rendering assault locations, not one named.**
 `/conquest` names every bulwark you could attack alongside the ones you are

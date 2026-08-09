@@ -112,3 +112,39 @@ test("a missing or junk document yields no sieges rather than throwing", () => {
     assert.deepEqual(mine(H.parseActiveSieges(input)), []);
   }
 });
+
+// --- heal all ---------------------------------------------------------------
+
+// The game only renders this control when someone is wounded, and it prices
+// the job itself. We quote its arithmetic rather than recomputing HP gaps.
+const healAllDoc = (buttonText, wrapperText, disabled = false) => {
+  const button = { textContent: buttonText, disabled, parentElement: null };
+  const wrapper = { textContent: wrapperText, parentElement: null };
+  button.parentElement = wrapper;
+  return { querySelectorAll: () => [button] };
+};
+
+test("the heal-all offer is read with the game's own costing line", () => {
+  const doc = healAllDoc(
+    "[ 💚 HEAL ALL HEROES ]",
+    "Mend the wounded[ 💚 HEAL ALL HEROES ]1 wounded · 79 HP to mend · brews 4 draughts: 48 timber · 24 iron"
+  );
+  const out = H.parseHealAll(doc);
+  assert.equal(out.available, true);
+  assert.match(out.summary, /1 wounded/);
+  assert.match(out.summary, /79 HP to mend/);
+  assert.match(out.summary, /48 timber/);
+  assert.ok(!out.summary.includes("HEAL ALL HEROES"), "the button's own text is not part of the quote");
+});
+
+test("no heal-all button means no offer", () => {
+  assert.equal(H.parseHealAll({ querySelectorAll: () => [] }).available, false);
+  for (const input of [null, undefined, "text", {}]) {
+    assert.equal(H.parseHealAll(input).available, false);
+  }
+});
+
+test("a disabled heal-all button is not offered", () => {
+  const doc = healAllDoc("[ 💚 HEAL ALL HEROES ]", "Mend the wounded ... 1 wounded", true);
+  assert.equal(H.parseHealAll(doc).available, false);
+});

@@ -187,7 +187,14 @@ Under the quick menu: every hero's class, name, level and HP, with a bar that
 colours as it drops. Read from `/heroes` with a single GET and parsed out of
 the server-rendered HTML, so it works on any page and mutates nothing.
 
-A **heal button** appears next to a hero only when they are actually hurt.
+**Heal all** mirrors the game's own `[ 💚 HEAL ALL HEROES ]`, which brews the
+draughts it needs and prices the job itself — the panel shows that quote
+verbatim (`1 wounded · 79 HP to mend · brews 4 draughts: 48 timber · 24 iron`)
+rather than recomputing it, so the number you confirm is the game's own.
+
+A **heal button** sits next to every hero, enabled only when they are hurt.
+Inside a siege it spends siege provisions; otherwise it spends an elixir you
+hold, chosen through the craftables page's own hero picker.
 Pressing it asks first, then drives the game's own button — in a hidden
 same-origin iframe, so it works from anywhere without navigating you to the
 siege page.
@@ -250,13 +257,13 @@ through. It was a 404 page. **Never infer a path from a label.**
 node --test test/fuzzy.test.mjs     # 12 matcher unit tests
 node --test test/learned.test.mjs   # 11 retention-policy unit tests
 node --test test/config.test.mjs    # 27 settings-model unit tests
-node --test test/heroes.test.mjs    #  8 hero-roster parser unit tests
+node --test test/heroes.test.mjs    # 14 hero, siege and heal-all parsers
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 49 checks, quick menu + hero panel
+python3 test/dock.py                # 57 checks, quick menu + hero panel
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 141 pass. The Python tests need Playwright; `test/chromium_path.py` locates
+All 151 pass. The Python tests need Playwright; `test/chromium_path.py` locates
 a Chromium on either Linux or macOS, overridable with `SENESCHAL_CHROMIUM`.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the

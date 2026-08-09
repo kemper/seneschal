@@ -90,6 +90,7 @@
     constructor() {
       this.settings = SEN.config.defaults();
       this.heroes = null;   // null = nothing known yet, [] = read and empty
+      this.healAll = null;
       this.sieges = null;
       this.refreshing = false;
       this.watcher = null;
@@ -135,6 +136,7 @@
       const cached = await store.get(HEROES_KEY, null);
       if (!cached || !Array.isArray(cached.heroes)) return;
       this.heroes = cached.heroes;
+      this.healAll = cached.healAll || null;
       this.sieges = Array.isArray(cached.sieges) ? cached.sieges : [];
     }
 
@@ -288,6 +290,25 @@
         return box;
       }
 
+      // The game's own "heal all", mirrored. It brews the draughts itself and
+      // prices the job, so the quote shown here is its arithmetic, not ours.
+      if (this.healAll && this.healAll.available) {
+        const all = document.createElement("button");
+        all.type = "button";
+        all.className = "dk-healall";
+        all.append(this._span("dk-icon", "💚"), this._span("dk-text", "Heal all"));
+        all.title = this.healAll.summary || "Mend every wounded hero";
+        all.addEventListener("click", () => this._healAll(all));
+        box.appendChild(all);
+
+        if (this.healAll.summary && !this.settings.dock.collapsed) {
+          const quote = document.createElement("div");
+          quote.className = "dk-quote";
+          quote.textContent = this.healAll.summary;
+          box.appendChild(quote);
+        }
+      }
+
       for (const hero of this.heroes) {
         const row = document.createElement("div");
         row.className = "dk-hero";
@@ -308,12 +329,12 @@
         heal.type = "button";
         heal.className = "dk-heal";
         heal.textContent = "⛑";
-        heal.disabled = !damaged || !inSiege;
+        heal.disabled = !damaged;
         heal.title = !damaged
           ? `${hero.name} is at full health`
-          : !inSiege
-            ? "No active siege — provisions healing needs one"
-            : `Heal ${hero.name} (${hero.hp}/${hero.maxHp}) — spends provisions`;
+          : inSiege
+            ? `Heal ${hero.name} (${hero.hp}/${hero.maxHp}) — spends siege provisions`
+            : `Heal ${hero.name} (${hero.hp}/${hero.maxHp}) — spends a held elixir`;
         heal.addEventListener("click", () => this._heal(hero, heal));
         row.appendChild(heal);
         box.appendChild(row);
@@ -360,13 +381,14 @@
       this.refreshing = true;
       this._paintRefreshing();
       try {
-        const [heroes, sieges] = await Promise.all([
-          SEN.heroes.loadHeroes(),
+        const [roster, sieges] = await Promise.all([
+          SEN.heroes.loadRoster(),
           SEN.heroes.loadSieges().catch(() => []),
         ]);
-        this.heroes = heroes;
+        this.heroes = roster.heroes;
+        this.healAll = roster.healAll;
         this.sieges = sieges;
-        await store.set(HEROES_KEY, { heroes, sieges, at: Date.now() });
+        await store.set(HEROES_KEY, { heroes: roster.heroes, healAll: roster.healAll, sieges, at: Date.now() });
         this.refreshing = false;
         this.render();
       } catch (e) {
@@ -423,14 +445,22 @@
         this.toast(`${hero.name} is already at full health.`);
         return;
       }
-      const siege = this.settings.heroes.siege || this.sieges?.[0] || "";
-      const where = siege ? ` on ${siege}` : "";
-      if (!confirm(`Heal ${hero.name} (${hero.hp}/${hero.maxHp})${where}?\n\nThis spends provisions.`)) return;
+      // Two routes, and which one is available depends on the game's state:
+      // siege provisions are cheap but need a siege you are committed to;
+      // otherwise fall back to spending an elixir you already hold.
+      const inSiege = Boolean(this.sieges && this.sieges.length);
+      const siege = (this.sieges || []).includes(this.settings.heroes.siege)
+        ? this.settings.heroes.siege
+        : (this.sieges || [])[0] || "";
+      const cost = inSiege ? `siege provisions on ${siege}` : "one held elixir";
+      if (!confirm(`Heal ${hero.name} (${hero.hp}/${hero.maxHp})?\n\nThis spends ${cost}.`)) return;
 
       button.disabled = true;
       button.classList.add("dk-busy");
       try {
-        const out = await SEN.heroes.heal({ heroName: hero.name, siege });
+        const out = inSiege
+          ? await SEN.heroes.heal({ heroName: hero.name, siege })
+          : await SEN.heroes.healWithElixir({ heroName: hero.name });
         if (out.healed) {
           this.toast(`${hero.name}: ${out.before} → ${out.after}/${out.maxHp}. ${out.cost || ""}`.trim());
         } else {
@@ -716,6 +746,29 @@
       await store.set(SEN.config.STORAGE_KEY, this.settings);
       this.render();
       this.toast(`Added "${result.item.label}" to the quick menu.`);
+    }
+
+    /** Press the game's own heal-all, quoting its own price back to you. */
+    async _healAll(button) {
+      const quote = this.healAll?.summary ? `\n\n${this.healAll.summary}` : "";
+      if (!confirm(`Heal every wounded hero?${quote}`)) return;
+
+      button.disabled = true;
+      button.classList.add("dk-busy");
+      try {
+        const out = await SEN.heroes.healAll();
+        if (out.healed) {
+          this.toast(`Mended ${out.wounded} hero${out.wounded === 1 ? "" : "es"}, +${out.gained} HP.`);
+        } else {
+          this.toast("Heal all did not take — nothing changed.", true);
+        }
+      } catch (e) {
+        console.warn("[Seneschal] heal all failed:", e);
+        this.toast(`Could not heal all: ${e.message}`, true);
+      } finally {
+        button.classList.remove("dk-busy");
+        this._refreshHeroes();
+      }
     }
 
     async _setCollapsed(collapsed) {

@@ -44,6 +44,10 @@
   flex-direction: column;
   gap: 2px;
   padding: 6px;
+  /* A column flex sizes to its widest child's max-content, so one long line —
+     the heal-all price quote — would stretch the whole rail across the page.
+     Cap it and let text wrap instead. */
+  max-width: 260px;
   background: rgba(20, 24, 31, 0.94);
   border: 1px solid #2c333f;
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
@@ -254,6 +258,41 @@
 .dk-siege:hover:not(:disabled) { color: #f0b750; border-color: #d9a441; }
 .dk-siege:disabled { opacity: 0.6; cursor: default; }
 .dk-siege[hidden] { display: none; }
+
+/* Heal all: the game's own control, mirrored. Reads as an action, and carries
+   the game's own price quote underneath rather than one we computed. */
+.dk-healall {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 2px 0;
+  padding: 5px 10px;
+  border: 1px solid #3a5c40;
+  border-radius: 7px;
+  background: #16241a;
+  color: #9fd3a6;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.dk-left .dk-healall { flex-direction: row-reverse; text-align: right; }
+.dk-healall:hover:not(:disabled) { border-color: #5fa564; color: #c6ecc9; }
+.dk-healall:disabled { opacity: 0.4; cursor: default; }
+.dk-healall.dk-busy { color: #d9a441; border-color: #d9a441; }
+.dk-wrap.dk-collapsed .dk-healall { justify-content: center; padding: 5px 8px; }
+
+.dk-quote {
+  margin: 0 10px 4px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #6b7686;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.dk-wrap.dk-collapsed .dk-quote { display: none; }
 
 /* --- toast ---------------------------------------------------------------- */
 

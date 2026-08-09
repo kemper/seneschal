@@ -123,6 +123,45 @@
     return [...new Set((flat.match(/The [A-Z][A-Za-z]+ Bulwark/g) || []))];
   }
 
+  // The game's own "heal all" control, on /heroes. It only renders when someone
+  // is wounded, and it prices itself:
+  //   "1 wounded · 79 HP to mend · brews 4 draughts: 48 timber · 24 iron"
+  // That summary is the game's arithmetic, not ours — show it verbatim rather
+  // than recomputing HP gaps and elixir counts and risking a different answer.
+  const HEAL_ALL = /HEAL ALL HEROES/i;
+
+  /**
+   * @param {Document} doc a parsed /heroes document
+   * @returns {{available:boolean, label:string, summary:string}}
+   */
+  function parseHealAll(doc) {
+    const none = { available: false, label: "", summary: "" };
+    if (!doc || !doc.querySelectorAll) return none;
+    const button = [...doc.querySelectorAll("button")].find((b) => HEAL_ALL.test(b.textContent || ""));
+    if (!button || button.disabled) return none;
+
+    const label = (button.textContent || "").replace(/\s+/g, " ").trim();
+    // The costing line sits beside the button; take the nearest ancestor that
+    // carries it, then subtract the button's own text.
+    let summary = "";
+    let node = button;
+    for (let hops = 0; node && hops < 5; hops++, node = node.parentElement) {
+      const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+      if (/wounded/i.test(text) && text.length > label.length) {
+        // Keep only the costing itself: the surrounding block also carries a
+        // "Mend the wounded" heading, which is redundant next to our button.
+        summary = text
+          .split(label)
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .replace(/^.*?(?=\d+\s+wounded)/i, "")
+          .trim();
+        break;
+      }
+    }
+    return { available: true, label, summary };
+  }
+
   /** Fraction of max HP remaining, clamped. Used for the bar and its colour. */
   function hpFraction(hero) {
     if (!hero || !hero.maxHp) return 0;
@@ -161,6 +200,15 @@
 
   async function loadHeroes() {
     return parseHeroes(textOf(await fetchText(HEROES_PATH)));
+  }
+
+  /** Roster and the heal-all offer in one read, since both live on /heroes. */
+  async function loadRoster() {
+    const doc = new DOMParser().parseFromString(await fetchText(HEROES_PATH), "text/html");
+    return {
+      heroes: parseHeroes(doc.body.textContent || ""),
+      healAll: parseHealAll(doc),
+    };
   }
 
   async function loadSieges() {
@@ -278,8 +326,91 @@
     }
   }
 
+  /**
+   * Press the game's own "heal all" button, in a hidden frame. It brews
+   * whatever draughts are needed and spends the resources it quoted.
+   *
+   * Verified by total HP across the roster, not by the click returning.
+   */
+  async function healAll() {
+    const before = await loadHeroes();
+    const hurt = before.filter(isDamaged);
+    if (!hurt.length) throw new Error("nobody is wounded");
+    const totalBefore = before.reduce((sum, h) => sum + h.hp, 0);
+
+    const frame = openFrame(HEROES_PATH);
+    try {
+      await frame.ready;
+      await wait(SETTLE_MS);
+      const doc = frame.el.contentDocument;
+      if (!doc) throw new Error("could not reach the champions page");
+
+      const button = [...doc.querySelectorAll("button")].find((b) => HEAL_ALL.test(b.textContent || ""));
+      if (!button) throw new Error("no heal-all button — is anyone actually wounded?");
+      if (button.disabled) throw new Error("the heal-all button is disabled");
+      button.click();
+      await wait(STEP_MS);
+
+      const after = await loadHeroes();
+      const totalAfter = after.reduce((sum, h) => sum + h.hp, 0);
+      return { healed: totalAfter > totalBefore, gained: totalAfter - totalBefore, wounded: hurt.length };
+    } finally {
+      frame.close();
+    }
+  }
+
+  /**
+   * Spend one held elixir on a hero, via the craftables page: choose them in
+   * the hero dropdown, then USE ON HERO.
+   *
+   * React tracks input values, so the dropdown has to be set through the
+   * native setter and given a real change event — assigning `.value` alone
+   * leaves React believing nothing was chosen.
+   */
+  async function healWithElixir({ heroName }) {
+    const before = (await loadHeroes()).find((h) => h.name === heroName);
+    if (!before) throw new Error(`${heroName} is not in the roster`);
+    if (!isDamaged(before)) throw new Error(`${heroName} is already at full health`);
+
+    const frame = openFrame("/expeditions/buildings/craftables");
+    try {
+      await frame.ready;
+      await wait(SETTLE_MS);
+      const doc = frame.el.contentDocument;
+      if (!doc) throw new Error("could not reach the craftables page");
+
+      const select = [...doc.querySelectorAll("select")].find((s) =>
+        [...s.options].some((o) => o.textContent.includes(heroName) && /\d+\s*\/\s*\d+/.test(o.textContent))
+      );
+      if (!select) throw new Error("no elixir is held — craft one first");
+      const option = [...select.options].find((o) => o.textContent.includes(heroName));
+
+      const view = frame.el.contentWindow;
+      const setValue = Object.getOwnPropertyDescriptor(view.HTMLSelectElement.prototype, "value").set;
+      setValue.call(select, option.value);
+      select.dispatchEvent(new view.Event("change", { bubbles: true }));
+      await wait(600);
+
+      const use = [...doc.querySelectorAll("button")].find((b) => /USE ON HERO/i.test(b.textContent || ""));
+      if (!use) throw new Error("no USE ON HERO button — no elixir held");
+      if (use.disabled) throw new Error("USE ON HERO is disabled");
+      use.click();
+      await wait(STEP_MS);
+
+      const after = (await loadHeroes()).find((h) => h.name === heroName);
+      return { healed: Boolean(after && after.hp > before.hp), before: before.hp,
+               after: after ? after.hp : null, maxHp: before.maxHp };
+    } finally {
+      frame.close();
+    }
+  }
+
   SEN.heroes = {
     parseHeroes,
+    parseHealAll,
+    loadRoster,
+    healAll,
+    healWithElixir,
     parseActiveSieges,
     parseSiegeNames,
     isAbort,
