@@ -76,6 +76,13 @@ def staged_extension(port: int) -> Path:
 # Runs inside the page: the dock lives in a shadow root, so reach through it.
 DOCK = "document.getElementById('seneschal-dock').shadowRoot"
 
+# The shipped menu, in order. Kept in one place because two separate checks
+# depend on it: what a fresh install shows, and what clearing storage restores.
+DEFAULT_MENU = [
+    "Realm", "Champions", "Raids", "Sieges", "Arena", "Craftables",
+    "Spellbook", "Military", "Market", "Holds", "Stable", "Rankings",
+]
+
 
 async def main() -> int:
     port, httpd = serve(FIXTURE)
@@ -145,7 +152,7 @@ async def main() -> int:
 
         seeded = await labels()
         check(
-            seeded == ["Champions", "Raids", "Sieges", "Arena", "Craftables", "Military"],
+            seeded == DEFAULT_MENU,
             "default menu is the configured list, in order",
             str(seeded),
         )
@@ -243,7 +250,7 @@ async def main() -> int:
         await page.reload(wait_until="load")
         await page.wait_for_timeout(700)
         check(
-            await labels() == ["Champions", "Raids", "Sieges", "Arena", "Craftables", "Military"],
+            await labels() == DEFAULT_MENU,
             "clearing storage restores the shipped defaults",
             str(await labels()),
         )
@@ -611,6 +618,35 @@ async def main() -> int:
             "an elixir bigger than the wound says so",
             str(by_glyph.get("💧", {}).get("title")),
         )
+
+        # --- a long menu must not push the hero panel off the rail ------------
+        # Twelve links plus a full hero panel outgrow a laptop screen. Scrolling
+        # the rail as one block put the heal buttons and the tools below the
+        # fold — a screenshot caught it, a green suite did not, so it is pinned
+        # here now.
+        await page.set_viewport_size({"width": 1280, "height": 720})
+        await page.wait_for_timeout(200)
+        fit = await page.evaluate(
+            f"""() => {{
+                const rail = {DOCK}.querySelector('.dk-rail');
+                const list = {DOCK}.querySelector('.dk-items');
+                const tools = {DOCK}.querySelector('.dk-tools');
+                const heroes = {DOCK}.querySelector('.dk-heroes');
+                const r = rail.getBoundingClientRect();
+                return {{
+                    listScrolls: list.scrollHeight > list.clientHeight + 1,
+                    railScrolls: rail.scrollHeight > rail.clientHeight + 1,
+                    toolsInside: tools.getBoundingClientRect().bottom <= r.bottom + 1,
+                    heroesInside: heroes.getBoundingClientRect().top >= r.top - 1,
+                    onScreen: r.top >= 0 && r.bottom <= innerHeight,
+                }};
+            }}"""
+        )
+        check(fit["listScrolls"], "the link list is what scrolls when space runs out", str(fit))
+        check(not fit["railScrolls"], "the rail itself never scrolls", str(fit))
+        check(fit["toolsInside"], "add and settings stay reachable on a short screen", str(fit))
+        check(fit["heroesInside"], "the hero panel stays on the rail", str(fit))
+        check(fit["onScreen"], "the rail fits the viewport", str(fit))
 
         # --- asking happens in our own panel, never in a native dialog --------
         # Clicking a heal method must ask first. Cancelling it must spend

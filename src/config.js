@@ -59,22 +59,30 @@
    * The out-of-the-box menu, as requested.
    *
    * Every one of these is a `url` entry, because the nav harvest of 2026-08-08
-   * found a real path for all six. The earlier build shipped four of them as
+   * found a real path for all twelve. An earlier build shipped several as
    * `menu` patterns purely because catalog.js did not know their URLs — which
    * was a gap in our data, never a property of the game. One hop beats two.
    *
-   * Two of these paths are ones you would not guess, which is exactly why they
-   * were harvested rather than inferred: SIEGES is /conquest, and CRAFTABLES
-   * is three levels deep at /expeditions/buildings/craftables. RAIDS is the
-   * Expeditions door's own first sub-entry, so it points back at /expeditions.
+   * Four of these paths are ones you would not guess, which is exactly why they
+   * were harvested rather than inferred: SIEGES is /conquest, MARKET is
+   * /market but sits in the Realm row, CRAFTABLES is three levels deep at
+   * /expeditions/buildings/craftables, and RAIDS is the Expeditions door's own
+   * first sub-entry so it points back at /expeditions. Take every one of these
+   * from catalog.js; never from the label.
    */
   const DEFAULT_ITEMS = [
+    { id: "seed-realm", icon: "🏰", label: "Realm", type: "url", path: "/empire" },
     { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
     { id: "seed-raids", icon: "🏴", label: "Raids", type: "url", path: "/expeditions" },
     { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "url", path: "/conquest" },
     { id: "seed-arena", icon: "⚔️", label: "Arena", type: "url", path: "/arena" },
     { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+    { id: "seed-spellbook", icon: "🔮", label: "Spellbook", type: "url", path: "/spellbook" },
     { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
+    { id: "seed-market", icon: "🪙", label: "Market", type: "url", path: "/market" },
+    { id: "seed-holds", icon: "🚩", label: "Holds", type: "url", path: "/holds" },
+    { id: "seed-stable", icon: "🐎", label: "Stable", type: "url", path: "/stable" },
+    { id: "seed-rankings", icon: "🏆", label: "Rankings", type: "url", path: "/rankings" },
   ];
 
   /**
@@ -99,6 +107,79 @@
     { was: { id: "seed-hunt", type: "menu", match: "hunt", door: "/expeditions" }, now: { path: "/hunt" } },
     { was: { id: "seed-inventory", type: "url", path: "/inventory" }, now: { path: "/expeditions/inventory" } },
   ];
+
+  /**
+   * Every menu we have ever SHIPPED, verbatim, oldest first.
+   *
+   * A default only ever reaches a fresh install: change DEFAULT_ITEMS and
+   * everyone already running keeps whatever was written to storage the first
+   * time they loaded the extension. That is how a repaired Craftables path
+   * still walked to /empire for the one person who reported it.
+   *
+   * So a stored menu that is still EXACTLY one of these — same entries, same
+   * order, nothing edited — is ours rather than theirs, and is replaced with
+   * the current default. Add one entry, move one, rename one, and the
+   * fingerprint stops matching and we never touch it again.
+   *
+   * WHEN YOU CHANGE DEFAULT_ITEMS, PASTE THE OUTGOING LIST HERE. Forget, and
+   * the change silently applies to new installs only.
+   */
+  const SHIPPED_MENUS = [
+    // v0.1 — written before the nav was harvested; four entries hunted for a
+    // label behind a door that does not carry it, and /inventory is a 404.
+    [
+      { id: "seed-realm", icon: "🏰", label: "Realm", type: "url", path: "/empire" },
+      { id: "seed-expeditions", icon: "🧭", label: "Expeditions", type: "url", path: "/expeditions" },
+      { id: "seed-champions", icon: "⚔️", label: "Champions", type: "url", path: "/heroes" },
+      { id: "seed-inventory", icon: "🎒", label: "Inventory", type: "url", path: "/inventory" },
+      { id: "seed-buildings", icon: "🏛", label: "Buildings", type: "menu", match: "buildings", door: "/empire" },
+      { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/empire" },
+      { id: "seed-arena", icon: "🗡", label: "Arena", type: "menu", match: "arena", door: "/expeditions" },
+      { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "menu", match: "hunt", door: "/expeditions" },
+    ],
+    // The first requested menu, still reaching four destinations by name.
+    [
+      { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
+      { id: "seed-raids", icon: "🏴", label: "Raids", type: "menu", match: "raids", door: "/expeditions" },
+      { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "menu", match: "sieges", door: "/expeditions" },
+      { id: "seed-arena", icon: "⚔️", label: "Arena", type: "menu", match: "arena", door: "/expeditions" },
+      { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/empire" },
+      { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
+    ],
+    // The same six after the harvest, as real paths.
+    [
+      { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
+      { id: "seed-raids", icon: "🏴", label: "Raids", type: "url", path: "/expeditions" },
+      { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "url", path: "/conquest" },
+      { id: "seed-arena", icon: "⚔️", label: "Arena", type: "url", path: "/arena" },
+      { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+      { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
+    ],
+  ];
+
+  /**
+   * A comparable string for a menu. Covers every field an entry can carry, so
+   * editing ANY of them — including the icon — makes the menu yours.
+   */
+  function fingerprint(items) {
+    if (!Array.isArray(items)) return "";
+    return items
+      .map((it) =>
+        it && typeof it === "object"
+          ? [it.id, it.icon, it.label, it.type, it.path, it.match, it.door]
+              .map((v) => (v == null ? "" : String(v)))
+              .join("")
+          : ""
+      )
+      .join("");
+  }
+
+  /** Is this stored menu still one we shipped, untouched? */
+  function isShippedMenu(items) {
+    if (!Array.isArray(items) || !items.length) return false;
+    const mark = fingerprint(items);
+    return SHIPPED_MENUS.some((menu) => fingerprint(menu) === mark);
+  }
 
   /**
    * Rewrite one entry if it is an untouched copy of something we got wrong.
@@ -321,6 +402,12 @@
       return { config, problems };
     }
 
+    // A menu still identical to one we shipped is ours to keep current.
+    if (isShippedMenu(rawDock.items)) {
+      config.dock.items = base.dock.items;
+      return { config, problems };
+    }
+
     const seenIds = new Set();
     for (const candidate of rawDock.items.slice(0, MAX_ITEMS)) {
       const result = validateItem(migrateItem(candidate));
@@ -355,6 +442,7 @@
     classifyPath,
     validateItem,
     migrateItem,
+    isShippedMenu,
     normalize,
     newId,
   };

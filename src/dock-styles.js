@@ -53,10 +53,28 @@
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(3px);
   max-height: 86vh;
+  /* The rail itself never scrolls: its children do. Scrolling the whole thing
+     pushed the hero panel and the tools below the fold once the menu grew
+     past about eight entries. */
+  overflow: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #39424f transparent;
+}
+
+/* The link list surrenders space first — a link you can scroll to is a much
+   smaller loss than a heal button you cannot see. min-height:0 is what lets a
+   flex child shrink below its content at all. */
+.dk-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  flex: 0 100 auto;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: #39424f transparent;
 }
+.dk-sep, .dk-tools { flex: 0 0 auto; }
 .dk-right .dk-rail { border-right: 0; border-radius: 10px 0 0 10px; }
 .dk-left  .dk-rail { border-left: 0;  border-radius: 0 10px 10px 0; }
 
@@ -210,7 +228,20 @@
 
 /* --- hero panel ---------------------------------------------------------- */
 
-.dk-heroes { display: flex; flex-direction: column; gap: 3px; padding-top: 2px; position: relative; }
+.dk-heroes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 2px;
+  position: relative;
+  /* Shrinks only after the link list has given up what it can, and scrolls
+     itself rather than pushing the tools off the rail. */
+  min-height: 0;
+  flex: 0 1 auto;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #39424f transparent;
+}
 .dk-heroes[hidden] { display: none; }
 
 /* Refreshing: the last known roster stays put and is dimmed, rather than being

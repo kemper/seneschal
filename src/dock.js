@@ -263,8 +263,15 @@
       this.tab.setAttribute("aria-expanded", String(!collapsed));
 
       this.rail.textContent = "";
+
+      // The links live in their own scroller. A long menu and a full hero panel
+      // together outgrow a laptop screen, and when the rail scrolled as ONE
+      // block the heal buttons — the part you actually press — fell below the
+      // fold. Now the link list gives up its space first and the panel stays put.
+      const list = document.createElement("div");
+      list.className = "dk-items";
       for (const item of items) {
-        this.rail.appendChild(this._itemButton(item));
+        list.appendChild(this._itemButton(item));
       }
       if (!items.length) {
         const empty = document.createElement("button");
@@ -273,8 +280,9 @@
         empty.title = "Add your first quick menu entry";
         empty.append(this._span("dk-icon", "＋"), this._span("dk-text", "Add a link"));
         empty.addEventListener("click", () => this._openForm());
-        this.rail.appendChild(empty);
+        list.appendChild(empty);
       }
+      this.rail.appendChild(list);
 
       if (this.settings.heroes?.enabled) this.rail.appendChild(this._heroSection());
 

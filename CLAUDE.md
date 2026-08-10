@@ -175,14 +175,30 @@ routine). When it still hasn't changed, `blockedBy(doc)` reports any
 `role="dialog"` in the frame rather than shrugging — but it never clicks
 through one, because an unidentified button here can commit an assault.
 
-**20. A shipped config is a promise; repair it, don't just fix the default.**
-The first quick menu reached Craftables/Buildings/Arena/Hunt by NAME through
-doors that don't carry those labels, and pointed Inventory at `/inventory`
-(a 404). Changing `DEFAULT_ITEMS` fixed new installs only — everyone already
-running kept the broken entries, which is how "Craftables" navigated and *then*
-warned it couldn't find craftables. `LEGACY_SEEDS` in `config.js` rewrites them
-on load, but ONLY when an entry is still byte-identical to what we shipped:
-edit any field and it is yours, untouched.
+**20. A DEFAULT ONLY EVER REACHES A FRESH INSTALL.** Changing
+`DEFAULT_ITEMS` does nothing for anyone already running — their menu was
+written to storage on first load and stays there. This has now bitten twice
+(a repaired Craftables path that still walked to /empire; a new menu nobody
+would have seen). Two mechanisms in `config.js` close it, both keyed on "still
+exactly what we shipped, therefore ours":
+  - `LEGACY_SEEDS` repairs individual entries we got wrong.
+  - `SHIPPED_MENUS` holds every menu we have ever shipped, verbatim, and
+    replaces a stored one that still fingerprints identical with the current
+    default. **When you change `DEFAULT_ITEMS`, paste the outgoing list into
+    `SHIPPED_MENUS`** or the change silently applies to new installs only.
+
+The fingerprint covers every field including icon and order, so adding,
+removing, reordering or re-icing ONE entry makes the menu the user's and we
+never touch it again.
+
+**21. The rail's LINK LIST scrolls, not the rail.** Twelve links plus a full
+hero panel outgrow a laptop screen. When `.dk-rail` scrolled as one block the
+heal buttons and the ＋/⚙ tools fell below the fold — caught by a screenshot,
+not by the suite. `.dk-items` now has `flex: 0 100 auto` so it surrenders space
+first (a link you scroll to is a far smaller loss than a heal button you cannot
+see), `.dk-heroes` shrinks only after that, and `.dk-sep`/`.dk-tools` never
+shrink. `min-height: 0` is what permits any of it. `test/dock.py` pins this at
+a 720px viewport.
 
 ## Working agreements
 
@@ -206,14 +222,14 @@ edit any field and it is yours, untouched.
 ```bash
 node --test test/fuzzy.test.mjs     # 12
 node --test test/learned.test.mjs   # 11
-node --test test/config.test.mjs    # 32
+node --test test/config.test.mjs    # 40
 node --test test/heroes.test.mjs    # 14
 python3 test/e2e.py                 # 26
-python3 test/dock.py                # 70
+python3 test/dock.py                # 75
 python3 test/harvest.py             # 15
 ```
 
-180 checks. Keep them passing.
+193 checks. Keep them passing.
 
 The Python tests need Playwright. There is a local `.venv` (gitignored):
 `.venv/bin/python3 test/dock.py`. `test/chromium_path.py` finds a Chromium

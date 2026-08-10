@@ -306,3 +306,89 @@ test("every legacy repair lands on a path the catalog knows", () => {
     assert.ok(known.has(out.path), `${id} migrated to unknown path ${out.path}`);
   }
 });
+
+// --- keeping a menu we shipped current --------------------------------------
+
+test("the default menu is the requested one, in the requested order", () => {
+  const labels = CFG.defaults().dock.items.map((i) => i.label);
+  assert.deepEqual(
+    [...labels],
+    ["Realm", "Champions", "Raids", "Sieges", "Arena", "Craftables",
+     "Spellbook", "Military", "Market", "Holds", "Stable", "Rankings"]
+  );
+});
+
+test("an untouched shipped menu is brought up to the current default", () => {
+  // The whole point: a default only reaches a FRESH install, so without this a
+  // menu change is invisible to everyone already running the extension.
+  const oldMenu = [
+    { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
+    { id: "seed-raids", icon: "🏴", label: "Raids", type: "url", path: "/expeditions" },
+    { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "url", path: "/conquest" },
+    { id: "seed-arena", icon: "⚔️", label: "Arena", type: "url", path: "/arena" },
+    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+    { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
+  ];
+  const { config } = CFG.normalize({ dock: { items: oldMenu } });
+  assert.equal(config.dock.items.length, 12);
+  assert.equal(config.dock.items[0].label, "Realm");
+});
+
+test("the very first shipped menu is recognised too", () => {
+  const v01 = [
+    { id: "seed-realm", icon: "🏰", label: "Realm", type: "url", path: "/empire" },
+    { id: "seed-expeditions", icon: "🧭", label: "Expeditions", type: "url", path: "/expeditions" },
+    { id: "seed-champions", icon: "⚔️", label: "Champions", type: "url", path: "/heroes" },
+    { id: "seed-inventory", icon: "🎒", label: "Inventory", type: "url", path: "/inventory" },
+    { id: "seed-buildings", icon: "🏛", label: "Buildings", type: "menu", match: "buildings", door: "/empire" },
+    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/empire" },
+    { id: "seed-arena", icon: "🗡", label: "Arena", type: "menu", match: "arena", door: "/expeditions" },
+    { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "menu", match: "hunt", door: "/expeditions" },
+  ];
+  assert.equal(CFG.isShippedMenu(v01), true);
+  assert.equal(CFG.normalize({ dock: { items: v01 } }).config.dock.items.length, 12);
+});
+
+test("a menu with one entry added is the user's, and is left alone", () => {
+  const mine = [
+    ...CFG.defaults().dock.items,
+    { id: "it-mine", icon: "★", label: "My page", type: "url", path: "/delve" },
+  ];
+  const { config } = CFG.normalize({ dock: { items: mine } });
+  assert.equal(config.dock.items.length, 13);
+  assert.equal(config.dock.items[12].label, "My page");
+});
+
+test("a menu with one entry REMOVED is the user's", () => {
+  // Reseeding here would silently put back something deliberately deleted.
+  const trimmed = CFG.defaults().dock.items.slice(0, 4);
+  assert.equal(CFG.isShippedMenu(trimmed), false);
+  assert.equal(CFG.normalize({ dock: { items: trimmed } }).config.dock.items.length, 4);
+});
+
+test("reordering or re-icing a shipped menu makes it the user's", () => {
+  const shipped = CFG.defaults().dock.items;
+  const reordered = [shipped[1], shipped[0], ...shipped.slice(2)];
+  assert.equal(CFG.isShippedMenu(reordered), false, "order is part of the fingerprint");
+
+  const reiced = shipped.map((it, i) => (i ? it : { ...it, icon: "🌟" }));
+  assert.equal(CFG.isShippedMenu(reiced), false, "the icon is part of the fingerprint");
+});
+
+test("an empty menu is not a shipped one, so a cleared menu stays cleared", () => {
+  assert.equal(CFG.isShippedMenu([]), false);
+  assert.equal(CFG.normalize({ dock: { items: [] } }).config.dock.items.length, 0);
+});
+
+test("every default path is one the catalog harvested", () => {
+  // The defaults must never contain a guessed path. Kept in step with
+  // catalog.js by hand, so a typo here fails loudly rather than 404ing live.
+  const harvested = new Set([
+    "/empire", "/heroes", "/expeditions", "/conquest", "/arena",
+    "/expeditions/buildings/craftables", "/spellbook", "/military",
+    "/market", "/holds", "/stable", "/rankings",
+  ]);
+  for (const item of CFG.defaults().dock.items) {
+    assert.ok(harvested.has(item.path), `${item.label} points at unharvested ${item.path}`);
+  }
+});
