@@ -174,11 +174,21 @@
       .join("");
   }
 
-  /** Is this stored menu still one we shipped, untouched? */
+  /**
+   * Is this stored menu still one we shipped, untouched?
+   *
+   * Compared in MIGRATED form on both sides, which matters more than it looks.
+   * `LEGACY_SEEDS` repairs entries in place on every load, and the moment
+   * anything writes settings back — collapsing the rail, adding a link,
+   * switching siege — storage holds the repaired menu rather than the one we
+   * shipped. Fingerprinting the raw form missed those completely, so a menu
+   * that had been repaired could never be brought forward again.
+   */
   function isShippedMenu(items) {
     if (!Array.isArray(items) || !items.length) return false;
-    const mark = fingerprint(items);
-    return SHIPPED_MENUS.some((menu) => fingerprint(menu) === mark);
+    const settle = (menu) => fingerprint(menu.map(migrateItem));
+    const mark = settle(items);
+    return SHIPPED_MENUS.some((menu) => settle(menu) === mark);
   }
 
   /**

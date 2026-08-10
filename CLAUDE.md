@@ -191,6 +191,19 @@ The fingerprint covers every field including icon and order, so adding,
 removing, reordering or re-icing ONE entry makes the menu the user's and we
 never touch it again.
 
+**The two mechanisms interact, and getting it wrong is silent.** `LEGACY_SEEDS`
+rewrites entries on EVERY load, so as soon as anything writes settings back —
+collapsing the rail, adding a link, switching siege — storage holds the
+*repaired* menu, not the shipped one. Fingerprinting the raw form therefore
+missed every already-repaired menu, which is a config that can never be brought
+forward again. `isShippedMenu` compares in MIGRATED form on both sides.
+Reported as "I'm not seeing it update after a refresh"; keep the tests that
+pin it.
+
+**Also: an unpacked extension does not pick up file changes on a page
+refresh.** Reload it at `chrome://extensions` first. The ID is derived from the
+directory path and does NOT change. Rule that out before debugging config.
+
 **21. The rail's LINK LIST scrolls, not the rail.** Twelve links plus a full
 hero panel outgrow a laptop screen. When `.dk-rail` scrolled as one block the
 heal buttons and the ＋/⚙ tools fell below the fold — caught by a screenshot,
@@ -222,14 +235,14 @@ a 720px viewport.
 ```bash
 node --test test/fuzzy.test.mjs     # 12
 node --test test/learned.test.mjs   # 11
-node --test test/config.test.mjs    # 40
+node --test test/config.test.mjs    # 43
 node --test test/heroes.test.mjs    # 14
 python3 test/e2e.py                 # 26
 python3 test/dock.py                # 75
 python3 test/harvest.py             # 15
 ```
 
-193 checks. Keep them passing.
+196 checks. Keep them passing.
 
 The Python tests need Playwright. There is a local `.venv` (gitignored):
 `.venv/bin/python3 test/dock.py`. `test/chromium_path.py` finds a Chromium

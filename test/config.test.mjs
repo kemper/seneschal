@@ -392,3 +392,46 @@ test("every default path is one the catalog harvested", () => {
     assert.ok(harvested.has(item.path), `${item.label} points at unharvested ${item.path}`);
   }
 });
+
+test("a shipped menu that was already REPAIRED is still recognised", () => {
+  // LEGACY_SEEDS rewrites entries on every load, so the moment anything writes
+  // settings back, storage holds the repaired menu rather than the shipped one.
+  // Fingerprinting the raw form missed exactly that, and the user saw a menu
+  // that would never move again.
+  const repaired = [
+    { id: "seed-realm", icon: "🏰", label: "Realm", type: "url", path: "/empire" },
+    { id: "seed-expeditions", icon: "🧭", label: "Expeditions", type: "url", path: "/expeditions" },
+    { id: "seed-champions", icon: "⚔️", label: "Champions", type: "url", path: "/heroes" },
+    { id: "seed-inventory", icon: "🎒", label: "Inventory", type: "url", path: "/expeditions/inventory" },
+    { id: "seed-buildings", icon: "🏛", label: "Buildings", type: "url", path: "/expeditions/buildings" },
+    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+    { id: "seed-arena", icon: "🗡", label: "Arena", type: "url", path: "/arena" },
+    { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "url", path: "/hunt" },
+  ];
+  assert.equal(CFG.isShippedMenu(repaired), true);
+  assert.equal(CFG.normalize({ dock: { items: repaired } }).config.dock.items.length, 12);
+});
+
+test("the second shipped menu survives repair-then-write too", () => {
+  // Same story for the six-entry menu: four of its entries were `menu`
+  // patterns that LEGACY_SEEDS turns into paths.
+  const repaired = [
+    { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
+    { id: "seed-raids", icon: "🏴", label: "Raids", type: "menu", match: "raids", door: "/expeditions" },
+    { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "menu", match: "sieges", door: "/expeditions" },
+    { id: "seed-arena", icon: "⚔️", label: "Arena", type: "url", path: "/arena" },
+    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+    { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
+  ];
+  assert.equal(CFG.isShippedMenu(repaired), true);
+});
+
+test("repair-aware matching does not make unrelated menus look shipped", () => {
+  // The relaxation must not turn into "any eight-entry menu matches".
+  const mine = [
+    { id: "it-1", icon: "★", label: "Mine", type: "url", path: "/empire" },
+    { id: "it-2", icon: "★", label: "Other", type: "url", path: "/heroes" },
+  ];
+  assert.equal(CFG.isShippedMenu(mine), false);
+  assert.equal(CFG.normalize({ dock: { items: mine } }).config.dock.items.length, 2);
+});
