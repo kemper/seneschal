@@ -192,8 +192,31 @@
 }
 .dk-toast[hidden] { display: none; }
 
+/* --- in-flight entry -----------------------------------------------------
+   A menu entry walks to its door and then waits for the control to appear,
+   which can take seconds. The icon becomes a spinner for that window so the
+   click does not read as having done nothing. */
+.dk-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .22);
+  border-top-color: #d9a441;
+  animation: dk-spin 720ms linear infinite;
+}
+.dk-btn[data-busy="true"] { color: #d9a441 }
+@keyframes dk-spin { to { transform: rotate(360deg) } }
+
 @media (prefers-reduced-motion: reduce) {
   .dk-wrap, .dk-toast { transition: none }
+  /* Keep the affordance, drop the rotation. */
+  .dk-spinner {
+    animation: dk-pulse 1.4s ease-in-out infinite;
+    border-top-color: rgba(255, 255, 255, .22);
+    background: #d9a441;
+  }
+  @keyframes dk-pulse { 50% { opacity: .35 } }
 }
 `;
 })();

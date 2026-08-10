@@ -146,8 +146,56 @@
   color: #99a3b3;
 }
 
+/* --- pending state -------------------------------------------------------
+   Shown while an action (as opposed to a plain jump) is in flight. A jump
+   needs no indicator because the page itself visibly changes; an action can
+   take seconds and leave the screen looking untouched, which reads as "my
+   keypress did nothing". */
+.sen-status {
+  display: none;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 14px;
+  border-top: 1px solid #232a34;
+  font-size: 13px;
+  color: #cbd2dd;
+}
+.sen-status[data-state] { display: flex }
+.sen-status[data-state="error"] { color: #f0906b }
+.sen-status[data-state="done"]  { color: #7fc98a }
+
+.sen-spinner {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid #39414f;
+  border-top-color: #d9a441;
+  animation: sen-spin 720ms linear infinite;
+}
+/* Success and failure are settled states — a still-spinning ring next to
+   "Healed" would claim work is continuing. */
+.sen-status[data-state="done"]  .sen-spinner,
+.sen-status[data-state="error"] .sen-spinner { display: none }
+.sen-status .sen-mark { flex: none; font-size: 13px }
+
+@keyframes sen-spin { to { transform: rotate(360deg) } }
+
+/* While busy the list is inert: dimmed, and pointer events off so a stray
+   click cannot fire a second action. Keyboard is blocked in palette.js. */
+.sen-modal[aria-busy="true"] .sen-list { opacity: .4; pointer-events: none }
+.sen-modal[aria-busy="true"] .sen-input { color: #6b7686 }
+
 @media (prefers-reduced-motion: reduce) {
   .sen-overlay, .sen-modal { animation: none }
+  /* Keep a non-moving indicator rather than removing the affordance: the
+     ring stays, it simply pulses instead of rotating. */
+  .sen-spinner {
+    animation: sen-pulse 1.4s ease-in-out infinite;
+    border-top-color: #39414f;
+    background: #d9a441;
+  }
+  @keyframes sen-pulse { 50% { opacity: .35 } }
 }
 `;
 })();

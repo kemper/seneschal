@@ -11,6 +11,10 @@
   const MAX_RESULTS = 40;
   const LEARNED_KEY = "seneschal.learned.v1";
   const FRECENCY_KEY = "seneschal.frecency.v1";
+  // How long an action may run before the status line admits it is slow, and
+  // how long a success message stays up before the palette closes itself.
+  const SLOW_AFTER_MS = 8000;
+  const DONE_LINGER_MS = 900;
 
   // How long the DOM has to stay still before we rebuild the index. The game
   // re-renders its boards on a timer, so rebuilding on every mutation would
@@ -140,6 +144,11 @@
                    role="combobox" aria-expanded="true" aria-controls="sen-list" />
           </div>
           <div class="sen-list" id="sen-list" role="listbox"></div>
+          <div class="sen-status" role="status" aria-live="polite">
+            <span class="sen-spinner" aria-hidden="true"></span>
+            <span class="sen-mark" aria-hidden="true"></span>
+            <span class="sen-statustext"></span>
+          </div>
           <div class="sen-footer">
             <span><kbd>&uarr;&darr;</kbd>navigate</span>
             <span><kbd>&#8629;</kbd>open</span>
@@ -151,6 +160,11 @@
       this.input = this.root.querySelector(".sen-input");
       this.list = this.root.querySelector(".sen-list");
       this.modal = this.root.querySelector(".sen-modal");
+      this.status = this.root.querySelector(".sen-status");
+      this.statusText = this.root.querySelector(".sen-statustext");
+      this.statusMark = this.root.querySelector(".sen-mark");
+      this.busy = null;
+      this.runId = 0;
 
       this.input.addEventListener("input", () => {
         this.query = this.input.value;
@@ -472,11 +486,21 @@
 
     // --- activation --------------------------------------------------------
     _activate(index) {
+      // Ignore every activation while an action is in flight. This is the
+      // double-fire guard: an action can spend real resources, so a second
+      // Enter on an unresponsive-looking palette must not buy a second one.
+      if (this.busy) return;
+
       const res = this.results[index ?? this.cursor];
       if (!res) return;
       const item = res.item;
 
       this._bumpFrecency(item.label);
+
+      // An action runs in place and reports progress; a jump closes the
+      // palette, because the page changing is its own feedback.
+      if (typeof item.run === "function") return this._runAction(item);
+
       this.hide();
 
       // Prefer a REAL CLICK on a live element over assigning location: the game
@@ -498,6 +522,80 @@
       if (doorPath && location.pathname !== doorPath) location.assign(doorPath);
     }
 
+    // --- actions ------------------------------------------------------------
+    /**
+     * Run an item's action with the palette held open, showing a live status
+     * line. Resolves when the action settles; never throws.
+     *
+     * States: busy → done (auto-closes) | error (stays open so the message can
+     * be read and the action retried). A slow action escalates its own wording
+     * rather than sitting on one frozen string, so a stall is distinguishable
+     * from ordinary latency.
+     */
+    async _runAction(item) {
+      // Every run carries a token. Dismissing the palette (or starting a new
+      // run) invalidates it, so a slow action that settles after the user has
+      // moved on cannot write its result over an unrelated later state.
+      const myRun = ++this.runId;
+      const verb = item.pendingLabel || `${item.label}…`;
+
+      this.busy = item;
+      this._setStatus("busy", verb);
+      this.modal.setAttribute("aria-busy", "true");
+      this.input.disabled = true;
+
+      const slow = setTimeout(() => {
+        if (this.runId === myRun) this._setStatus("busy", `${verb} still working`);
+      }, SLOW_AFTER_MS);
+
+      let ok = true;
+      let message;
+      try {
+        const result = await item.run();
+        message = (result && result.message) || `${item.label} — done`;
+      } catch (err) {
+        ok = false;
+        // Surface the real reason. A generic "something went wrong" is worse
+        // than useless for an action that may have spent resources.
+        message = (err && err.message) || String(err) || "Failed";
+      }
+
+      clearTimeout(slow);
+      if (this.runId !== myRun) return; // superseded or dismissed — stay quiet
+      this._clearBusy();
+      this._setStatus(ok ? "done" : "error", message);
+
+      if (ok) {
+        // Let the confirmation land, then get out of the way.
+        this.doneTimer = setTimeout(() => {
+          if (this.runId === myRun) this.hide();
+        }, DONE_LINGER_MS);
+      } else {
+        // A failure is exactly when the palette should stay put: the message
+        // needs reading, and retrying should not cost another Cmd-K.
+        this.input.focus();
+      }
+    }
+
+    _clearBusy() {
+      this.busy = null;
+      this.modal.removeAttribute("aria-busy");
+      this.input.disabled = false;
+    }
+
+    /** state: "busy" | "done" | "error" | null to clear. */
+    _setStatus(state, text) {
+      if (!state) {
+        this.status.removeAttribute("data-state");
+        this.statusText.textContent = "";
+        this.statusMark.textContent = "";
+        return;
+      }
+      this.status.setAttribute("data-state", state);
+      this.statusMark.textContent = state === "done" ? "✓" : state === "error" ? "✕" : "";
+      this.statusText.textContent = text;
+    }
+
     _bumpFrecency(label) {
       const k = SEN.scanner.normalizeKey(label) || label.toLowerCase();
       const cur = this.frecency[k] || { n: 0, last: 0 };
@@ -508,6 +606,15 @@
     // --- keys / visibility --------------------------------------------------
     _onKey(e) {
       if (!this.open) return;
+      // Escape always works, even mid-action — never trap the user in a modal
+      // waiting on something slow. The action keeps running; we just stop
+      // narrating it. Everything else is inert while busy so the selection
+      // cannot drift under the action that is already running.
+      if (this.busy && e.key !== "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
 
       // Every key we act on is also stopped here. Otherwise it goes on to the
       // game, which binds plenty of its own shortcuts and re-renders in
@@ -562,8 +669,10 @@
       this.lastFocus = document.activeElement;
       this.open = true;
       this.overlay.hidden = false;
+      this._setStatus(null);
       this.query = "";
       this.input.value = "";
+      this.input.disabled = false;
       this.cursor = 0;
       this._render();
       this.input.focus();
@@ -571,6 +680,14 @@
 
     hide() {
       if (!this.open) return;
+      clearTimeout(this.doneTimer);
+      // Deliberately does NOT cancel a running action — the game request is
+      // already in flight and cannot be recalled, so pretending otherwise
+      // would be a lie. Dismissing only stops the narration; _runAction's
+      // handlers check `this.busy` before touching a palette that may by then
+      // have been reopened on something else.
+      this.runId++; // invalidate any in-flight run's right to report back
+      this._clearBusy();
       this.open = false;
       this.overlay.hidden = true;
       // Return focus where the user left it, but never to something detached.

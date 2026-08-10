@@ -217,6 +217,7 @@
         this._toolButton("⚙", "Configure the quick menu", () => this._openOptions())
       );
       this.rail.append(sep, tools);
+      this._paintPending();
 
       if (!this.form.hidden) this._closeForm();
     }
@@ -226,6 +227,66 @@
       el.className = className;
       el.textContent = text;
       return el;
+    }
+
+    /**
+     * Mark an entry as in-flight, or clear it with null. Stored as state and
+     * reapplied by _paintPending, because _render() rebuilds the whole rail
+     * and would otherwise drop the indicator mid-hunt.
+     */
+    _setPending(pending) {
+      this.pending = pending;
+      this._paintPending();
+      if (pending) {
+        // Uses the toast's existing role="status", so it is announced rather
+        // than being a purely visual spinner.
+        this.busyToast(`${pending.label}…`);
+      } else {
+        this._clearBusyToast();
+      }
+    }
+
+    _paintPending() {
+      if (!this.rail) return;
+      for (const btn of this.rail.querySelectorAll('.dk-btn[data-busy="true"]')) {
+        btn.removeAttribute("data-busy");
+        btn.removeAttribute("aria-busy");
+        const icon = btn.querySelector(".dk-icon");
+        if (icon && icon.dataset.glyph !== undefined) {
+          icon.textContent = icon.dataset.glyph;
+          delete icon.dataset.glyph;
+          icon.classList.remove("dk-spinner");
+        }
+      }
+      if (!this.pending) return;
+
+      const btn = [...this.rail.querySelectorAll(".dk-btn")]
+        .find((b) => b.dataset.id === this.pending.id);
+      if (!btn) return; // entry was deleted mid-hunt; the toast still reports
+      btn.setAttribute("data-busy", "true");
+      btn.setAttribute("aria-busy", "true");
+      const icon = btn.querySelector(".dk-icon");
+      if (icon) {
+        // Stash the glyph so it can be restored exactly, emoji included.
+        icon.dataset.glyph = icon.textContent;
+        icon.textContent = "";
+        icon.classList.add("dk-spinner");
+      }
+    }
+
+    /** Like toast(), but stays up until the hunt ends rather than timing out. */
+    busyToast(message) {
+      clearTimeout(this.toastTimer);
+      this.toastEl.textContent = message;
+      this.toastEl.hidden = false;
+      this.toastEl.setAttribute("data-busy", "true");
+    }
+
+    _clearBusyToast() {
+      if (!this.toastEl.hasAttribute("data-busy")) return; // an error toast owns it now
+      this.toastEl.removeAttribute("data-busy");
+      this.toastEl.hidden = true;
+      this.toastEl.textContent = "";
     }
 
     _itemButton(item) {
@@ -312,7 +373,7 @@
 
       // Two belts: the in-memory watcher handles same-document SPA routing,
       // the sessionStorage record survives a full reload.
-      const pending = { match: item.match, label: item.label, expires: Date.now() + RESOLVE_MS };
+      const pending = { id: item.id, match: item.match, label: item.label, expires: Date.now() + RESOLVE_MS };
       session.write(PENDING_KEY, pending);
       this._watchFor(pending);
 
@@ -341,10 +402,15 @@
      */
     _watchFor(pending) {
       this._stopWatching();
+      // Walking the door and waiting for the control can take the better part
+      // of RESOLVE_MS, during which nothing on screen moves. Without this the
+      // click reads as having done nothing.
+      this._setPending(pending);
 
       const finish = (found) => {
         this._stopWatching();
         session.clear(PENDING_KEY);
+        this._setPending(null);
         if (found) {
           found.click();
           return;
@@ -508,6 +574,7 @@
 
     // --- toast ---------------------------------------------------------------
     toast(message) {
+      this.toastEl.removeAttribute("data-busy");
       this.toastEl.textContent = message;
       this.toastEl.hidden = false;
       clearTimeout(this.toastTimer);

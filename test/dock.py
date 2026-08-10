@@ -302,6 +302,29 @@ async def main() -> int:
         check(await labels() == ["Ghost"], "storage changes reach the dock live", str(await labels()))
 
         await click_entry("Ghost")
+        BUSY_PROBE = """() => {
+          const root = document.getElementById('seneschal-dock').shadowRoot;
+          const b = [...root.querySelectorAll('.dk-btn')].find(x => x.dataset.id === 'ghost');
+          const icon = b && b.querySelector('.dk-icon');
+          const t = root.querySelector('.dk-toast');
+          return { busy: b && b.getAttribute('data-busy'),
+                   aria: b && b.getAttribute('aria-busy'),
+                   spinner: !!(icon && icon.classList.contains('dk-spinner')),
+                   glyph: icon ? icon.textContent : null,
+                   toast: t.hidden ? '' : t.textContent };
+        }"""
+
+        # --- the in-flight indicator -----------------------------------------
+        # The hunt can run the full RESOLVE_MS with nothing on screen moving,
+        # which reads as a button that did nothing. While it runs, the entry's
+        # icon becomes a spinner and the status line names what is pending.
+        await page.wait_for_timeout(500)
+        flight = await page.evaluate(BUSY_PROBE)
+        check(flight["busy"] == "true", "the entry shows as in flight while hunting", str(flight))
+        check(flight["spinner"], "its icon becomes a spinner", str(flight))
+        check(flight["aria"] == "true", "it is marked aria-busy for screen readers", str(flight))
+        check("Ghost" in flight["toast"], "the status line names the pending entry", str(flight))
+
         await page.wait_for_timeout(7000)  # the resolve window is 6s
         toast = await page.evaluate(
             f"() => {{ const t = {DOCK}.querySelector('.dk-toast');"
@@ -314,6 +337,11 @@ async def main() -> int:
         )
         stale = await page.evaluate("() => sessionStorage.getItem('seneschal.pending.v1')")
         check(stale is None, "the failed pending click does not linger", str(stale))
+
+        settled = await page.evaluate(BUSY_PROBE)
+        check(settled["busy"] is None, "the indicator clears when the hunt gives up", str(settled))
+        check(not settled["spinner"], "the spinner is removed", str(settled))
+        check(settled["glyph"] == "\U0001F47B", "the entry's own glyph comes back", str(settled))
 
         # --- a pending click survives a FULL page load -----------------------
         # In the fixture the door is same-document, so the in-memory watcher

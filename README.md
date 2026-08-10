@@ -32,6 +32,38 @@ reload the game tab.
 
 Click the toolbar icon for the on/off switches and a way into the full editor.
 
+## Waiting is visible
+
+A quick-menu `menu` entry has to walk to its door and then wait for the named
+control to appear — up to `RESOLVE_MS` (6s). That window used to be completely
+silent, so a click read as having done nothing. Now the entry's icon becomes a
+spinner, it is marked `aria-busy`, and the status line names what is pending;
+all three come down when the control is found and clicked, or when the hunt
+gives up and warns. The indicator is stored as state and repainted after a
+re-render, so rebuilding the rail mid-hunt cannot drop it.
+
+The Cmd-K palette has the same idea for a different case.
+
+## Jumps and actions
+
+Most entries are **jumps**: the palette closes and the page changes, which is
+its own feedback. An entry can instead be an **action** — it carries a
+`run()` returning a promise, and then the palette stays open and narrates it:
+
+- a spinner and a live status line (`role="status"`, so it is announced), with
+  the ring swapped for a pulse under `prefers-reduced-motion`
+- the list goes inert and further keypresses are ignored, so a second Enter on
+  a palette that looks unresponsive cannot fire the action twice — the guard
+  that matters when an action spends real resources
+- past 8s it says so rather than sitting on one frozen string
+- success shows the action's own message and closes after a beat; **failure
+  shows the real error and stays open** so it can be read and retried
+- `Esc` always works, even mid-action; the request is already in flight and
+  cannot be recalled, so dismissing stops the narration, not the work
+
+No actions ship yet — the palette is navigation-only today. This is the
+machinery an action plugs into.
+
 ## How it finds things
 
 Wardenfall's navigation is **contextual**: only the six primary doors
@@ -146,6 +178,7 @@ tools/harvest-nav.js  DevTools one-shot: walks the doors, prints a catalog
 test/fuzzy.test.mjs   matcher unit tests
 test/learned.test.mjs retention-policy unit tests
 test/config.test.mjs  settings model: patterns, paths, validation
+test/pending.test.mjs pending-state unit tests
 test/e2e.py           loads the real unpacked extension in Chromium
 test/dock.py          drives the quick menu, options page and popup
 test/harvest.py       proves the harvester finds nav hidden behind other doors
@@ -187,12 +220,13 @@ keep up on its own.
 node --test test/fuzzy.test.mjs     # 12 matcher unit tests
 node --test test/learned.test.mjs   # 11 retention-policy unit tests
 node --test test/config.test.mjs    # 26 settings-model unit tests
+node --test test/pending.test.mjs   # 11 pending-state unit tests
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 40 checks, the quick menu end to end
+python3 test/dock.py                # 47 checks, the quick menu end to end
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 130 pass.
+All 148 pass.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the
 unpacked extension with `--load-extension`, and drives it exactly as a user
