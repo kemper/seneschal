@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Seneschal",
   "version": "0.3.0",
-  "description": "A command palette, a configurable floating quick menu, and a hero HP panel for Wardenfall.",
+  "description": "A command palette, a configurable floating quick menu, and a hero HP panel for Wardenfall. Press Cmd-K / Ctrl-K to fuzzy-jump anywhere.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -35,6 +35,7 @@
         "src/config.js",
         "src/learned.js",
         "src/scanner.js",
+        "src/necro.js",
         "src/styles.js",
         "src/dock-styles.js",
         "src/palette.js",

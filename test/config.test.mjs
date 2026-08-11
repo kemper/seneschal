@@ -157,7 +157,9 @@ test("each surface can be switched off independently", () => {
 test("a flat dock-only object still loads, so an older export is not lost", () => {
   const { config } = CFG.normalize({ side: "left", items: [{ label: "M", type: "url", path: "/m" }] });
   assert.equal(config.dock.side, "left");
-  assert.deepEqual(mine(config.dock.items).map((i) => i.label), ["M"]);
+  // A versionless export is by definition pre-v2, so it also picks up the
+  // migration. What matters here is that the user's own entry survives.
+  assert.ok(mine(config.dock.items).map((i) => i.label).includes("M"));
   assert.equal(config.palette.enabled, true);
 });
 
@@ -172,7 +174,10 @@ test("an explicitly empty menu is honoured, not overwritten with defaults", () =
 });
 
 test("bad entries are dropped AND reported, never silently swallowed", () => {
+  // Current version, so this exercises validation alone — the v1→v2 migration
+  // has its own tests in necro.test.mjs.
   const { config, problems } = CFG.normalize({
+    version: CFG.VERSION,
     dock: {
       items: [
         { label: "Good", type: "url", path: "/good" },
@@ -188,6 +193,7 @@ test("bad entries are dropped AND reported, never silently swallowed", () => {
 
 test("duplicate ids are re-minted so edits cannot hit the wrong row", () => {
   const { config } = CFG.normalize({
+    version: CFG.VERSION,
     dock: {
       items: [
         { id: "same", label: "One", type: "url", path: "/one" },
@@ -314,7 +320,8 @@ test("the default menu is the requested one, in the requested order", () => {
   assert.deepEqual(
     [...labels],
     ["Realm", "Champions", "Raids", "Sieges", "Arena", "Craftables",
-     "Spellbook", "Military", "Market", "Holds", "Stable", "Rankings"]
+     "Spellbook", "Military", "Market", "Holds", "Stable", "Rankings",
+     "Raise host"]
   );
 });
 
@@ -330,7 +337,7 @@ test("an untouched shipped menu is brought up to the current default", () => {
     { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
   ];
   const { config } = CFG.normalize({ dock: { items: oldMenu } });
-  assert.equal(config.dock.items.length, 12);
+  assert.equal(config.dock.items.length, 13);
   assert.equal(config.dock.items[0].label, "Realm");
 });
 
@@ -346,7 +353,7 @@ test("the very first shipped menu is recognised too", () => {
     { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "menu", match: "hunt", door: "/expeditions" },
   ];
   assert.equal(CFG.isShippedMenu(v01), true);
-  assert.equal(CFG.normalize({ dock: { items: v01 } }).config.dock.items.length, 12);
+  assert.equal(CFG.normalize({ dock: { items: v01 } }).config.dock.items.length, 13);
 });
 
 test("a menu with one entry added is the user's, and is left alone", () => {
@@ -355,15 +362,25 @@ test("a menu with one entry added is the user's, and is left alone", () => {
     { id: "it-mine", icon: "★", label: "My page", type: "url", path: "/delve" },
   ];
   const { config } = CFG.normalize({ dock: { items: mine } });
-  assert.equal(config.dock.items.length, 13);
-  assert.equal(config.dock.items[12].label, "My page");
+  assert.equal(config.dock.items.length, 14);
+  assert.equal(config.dock.items[13].label, "My page");
 });
 
 test("a menu with one entry REMOVED is the user's", () => {
   // Reseeding here would silently put back something deliberately deleted.
   const trimmed = CFG.defaults().dock.items.slice(0, 4);
   assert.equal(CFG.isShippedMenu(trimmed), false);
-  assert.equal(CFG.normalize({ dock: { items: trimmed } }).config.dock.items.length, 4);
+  const { config } = CFG.normalize({ dock: { items: trimmed } });
+  // Four kept verbatim, plus the one-time v2 host entry — this config carries
+  // no version, so it is a v1 config being brought forward. The links the user
+  // deleted stay deleted; see the migration tests for the host entry's own
+  // rule, which is that deleting it sticks once the version is stamped.
+  assert.equal(config.dock.items.length, 5);
+  assert.deepEqual(
+    mine(config.dock.items.slice(0, 4)).map((i) => i.label),
+    mine(trimmed).map((i) => i.label)
+  );
+  assert.equal(config.dock.items[4].type, "host");
 });
 
 test("reordering or re-icing a shipped menu makes it the user's", () => {
@@ -387,9 +404,16 @@ test("every default path is one the catalog harvested", () => {
     "/empire", "/heroes", "/expeditions", "/conquest", "/arena",
     "/expeditions/buildings/craftables", "/spellbook", "/military",
     "/market", "/holds", "/stable", "/rankings",
+    // The rites. NOT in the Realm row and not guessable from the label: the
+    // harvest puts "⚰ Necromancy" in the CHAMPIONS row, three levels deep.
+    "/expeditions/buildings/necromancy",
   ]);
   for (const item of CFG.defaults().dock.items) {
-    assert.ok(harvested.has(item.path), `${item.label} points at unharvested ${item.path}`);
+    // A host entry walks to a door rather than pointing at a path, but the
+    // door is a URL like any other and has to come from the harvest too — it
+    // shipped once as /empire, which is a real page carrying no rites at all.
+    const target = item.type === "host" ? item.door : item.path;
+    assert.ok(harvested.has(target), `${item.label} points at unharvested ${target}`);
   }
 });
 
@@ -409,7 +433,7 @@ test("a shipped menu that was already REPAIRED is still recognised", () => {
     { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "url", path: "/hunt" },
   ];
   assert.equal(CFG.isShippedMenu(repaired), true);
-  assert.equal(CFG.normalize({ dock: { items: repaired } }).config.dock.items.length, 12);
+  assert.equal(CFG.normalize({ dock: { items: repaired } }).config.dock.items.length, 13);
 });
 
 test("the second shipped menu survives repair-then-write too", () => {
@@ -428,10 +452,13 @@ test("the second shipped menu survives repair-then-write too", () => {
 
 test("repair-aware matching does not make unrelated menus look shipped", () => {
   // The relaxation must not turn into "any eight-entry menu matches".
-  const mine = [
+  // Named `theirs` rather than `mine`: `mine()` is the cross-realm copier.
+  const theirs = [
     { id: "it-1", icon: "★", label: "Mine", type: "url", path: "/empire" },
     { id: "it-2", icon: "★", label: "Other", type: "url", path: "/heroes" },
   ];
-  assert.equal(CFG.isShippedMenu(mine), false);
-  assert.equal(CFG.normalize({ dock: { items: mine } }).config.dock.items.length, 2);
+  assert.equal(CFG.isShippedMenu(theirs), false);
+  const { config } = CFG.normalize({ dock: { items: theirs } });
+  assert.equal(config.dock.items.length, 3, "their two, plus the one-time host entry");
+  assert.deepEqual(mine(config.dock.items.slice(0, 2)).map((i) => i.label), ["Mine", "Other"]);
 });

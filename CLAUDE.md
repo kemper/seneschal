@@ -1,8 +1,9 @@
 # Seneschal — working notes for agents
 
-A Chrome extension (Manifest V3) that adds a Cmd-K command palette to
-[wardenfall.com](https://wardenfall.com), a browser strategy game. The palette
-is v0.1; a companion dashboard is the eventual goal.
+A Chrome extension (Manifest V3) for [wardenfall.com](https://wardenfall.com),
+a browser strategy game: a Cmd-K command palette, a configurable floating quick
+menu, and — as of v0.3 — one action that performs a game rite rather than
+merely navigating. A companion dashboard is the eventual goal.
 
 This repo is **secret-free by design**. Do not add credentials, cookies,
 encrypted secret files, or keys — none are needed. A content script runs inside
@@ -213,10 +214,69 @@ see), `.dk-heroes` shrinks only after that, and `.dk-sep`/`.dk-tools` never
 shrink. `min-height: 0` is what permits any of it. `test/dock.py` pins this at
 a 720px viewport.
 
+**22. One feature SPENDS resources, and it is built to fail closed.** "Raise
+host" clicks a rite that consumes souls and can sacrifice living veterans — the
+only irreversible thing in the extension. Its vocabulary comes from a page-text
+capture (2026-07-01, when the rites still lived on `/expeditions`) and its
+*structure* is a guess, so `src/necro.js` never acts on a number it has not
+read. It refuses when a rite's size cannot be determined; refuses when walking
+up from a label to a button lands on a container naming a **different** rite
+(one hop too far is how you sacrifice veterans while trying to raise ghosts);
+verifies the size field actually took the value before performing, because a
+plain `value` write on a React-controlled input updates the pixels and not the
+state; and halts the harvest loop the first time a click fails to move the
+balance. **Do not collapse any of those into a happy path.**
+`tools/harvest-necromancy.js` turns the guess into a measurement — it reads
+only, and should be run before the inferred locators are trusted.
+
+**23. A `transform` makes an element the containing block for its
+`position: fixed` descendants.** `.dk-wrap` is transformed to centre itself
+vertically, so the confirmation scrim nested inside it was not full-screen at
+all — it was confined to the rail's own box, rendering a 420px dialog as a
+160px column crushed against the edge. The suite was green; the screenshot was
+not. The scrim now lives outside `.dk-wrap`, as does the toast, which had the
+same bug for the same reason. Keep both out there.
+
+**24. The rites panel, MEASURED 2026-08-11.** The July page-text capture that
+`necro.js` was built from was stale in three ways, and the DOM guesses built on
+it were actually fine — it was the *vocabulary* that was wrong. Live truth:
+
+  - It is at **`/expeditions/buildings/necromancy`**, and it renders in the
+    **CHAMPIONS** row, not the Realm row. The default door shipped as `/empire`,
+    whose row is Empire · Buildings · Market · Military · Statecraft — no
+    Necromancy anywhere in it, so the entry walked the wrong door and then
+    correctly announced it could not find the pattern. Take the path from
+    `catalog.js`; the group name is not the door and the label is not the path.
+  - **A host costs 1 dead + 1 soul per 1,000 raised**, stated on the card. Not
+    one soul per ghost — the old model overstated a 10,000 host by 1000x and
+    would have offered to sacrifice veterans to cover a shortfall that does not
+    exist. The rate is now PARSED, and no rate means the whole rite refuses.
+    The dead are a second currency with a hard ceiling (the input's `max` is the
+    raisable pool) and **no sacrifice refills them**, so never let "souls" stand
+    in for the whole price.
+  - `Disturbance 100/65` sits directly above a line beginning `60 scouts lost`.
+    Through `textContent` those weld into `Disturbance 100/6560`, and the
+    tolerance parsed as **6560**, so `disturbanceWarning` never fired on grounds
+    that were already 35 over and Haunted. Balances are now read through
+    `blockText()`, which restores element boundaries without `innerText`'s
+    reflow. **A number pattern must never end on a separator class.**
+
+What held up: the card-per-rite shape, the 1-hop walk from label to button, the
+over-walk refusal, and `hasOwnValueSetter: true` — React really does install its
+own setter, so the native-setter write in `setNumber` is doing real work.
+
+**One guard is currently incidental, and that is deliberate.** The live
+Soul-Harvest button reads `Sacrifice · +1 💀` — a glyph, not the word "souls" —
+so `parseSoulDelta` returns null, the plan comes back blocked, and the
+sacrifice path cannot run against the real game at all. Teaching it the 💀 glyph
+would ARM the only irreversible action in the extension. That is a decision to
+take deliberately, with the user, not a gap to tidy up; `necro.test.mjs` pins it
+so nobody tidies it up by accident.
+
 ## Working agreements
 
 - **Verify in a browser; do not trust reading.** Every bug so far was caught by
-  the Playwright suite and none would have survived review: an author
+  the Playwright suite (or a screenshot) and none would have survived review: an author
   `display: flex` overriding the `hidden` attribute (the palette never closed);
   a backtick inside a CSS comment terminating the JS template literal holding
   the whole stylesheet; a harvester that abandoned you on whatever page its walk
@@ -237,12 +297,14 @@ node --test test/fuzzy.test.mjs     # 12
 node --test test/learned.test.mjs   # 11
 node --test test/config.test.mjs    # 43
 node --test test/heroes.test.mjs    # 14
+node --test test/pending.test.mjs   # 11
+node --test test/necro.test.mjs     # 42
 python3 test/e2e.py                 # 26
-python3 test/dock.py                # 75
+python3 test/dock.py                # 111
 python3 test/harvest.py             # 15
 ```
 
-196 checks. Keep them passing.
+285 checks. Keep them passing.
 
 The Python tests need Playwright. There is a local `.venv` (gitignored):
 `.venv/bin/python3 test/dock.py`. `test/chromium_path.py` finds a Chromium
@@ -269,6 +331,10 @@ Launch Chromium with `--no-sandbox --disable-setuid-sandbox --disable-quic
 now holds all 35 live entries with real paths and real groups, verified
 35/35 with a zero diff. `tools/harvest-nav.js` regenerates it and reports
 "n gone, n new, n moved" against what is shipped.
+
+**1a. ~~Measure the rites panel.~~ DONE 2026-08-11**, against the live site —
+see finding 24 for what it changed. The inferred DOM shape held; the
+*vocabulary* did not.
 
 **0. Settings live in one object**, `seneschal.settings.v1` in
 `chrome.storage.local`: `{ palette: {enabled}, dock: {enabled, side, collapsed,

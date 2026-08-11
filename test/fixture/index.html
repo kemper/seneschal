@@ -49,6 +49,7 @@
     <a href="/military">MILITARY ●</a>
     <a href="/diplomacy">STATECRAFT ●</a>
     <a href="/craftables">🛠 CRAFTABLES ●</a>
+    <a href="/necromancy">⚰ NECROMANCY ●</a>
     <!-- No ● marker: stands in for the game restyling that dot away. It must
          still be indexed and learned, on the strength of living in a <nav>. -->
     <a href="/ledger">LEDGER</a>
@@ -57,6 +58,8 @@
   <main>
     <h1>Empire</h1>
     <p id="log">no navigation yet</p>
+    <!-- The rites panel renders in here when NECROMANCY is reached. -->
+    <div id="panel"></div>
   </main>
 
   <script>
@@ -69,6 +72,7 @@
         ['BUILDINGS ●', '/buildings'], ['MARKET ●', '/market'],
         ['MILITARY ●', '/military'], ['STATECRAFT ●', '/diplomacy'],
         ['🛠 CRAFTABLES ●', '/craftables'],
+        ['⚰ NECROMANCY ●', '/necromancy'],
         ['LEDGER', '/ledger'], // no ● on purpose — see the scanner tests
       ],
       '/expeditions': [
@@ -78,6 +82,86 @@
       '/heroes': [['SPELLBOOK ●', '/spellbook']],
     };
 
+    // --- the Rites of Remembrance panel ---------------------------------
+    // MEASURED against the live panel on 2026-08-11 (the July capture this was
+    // first built from priced a host at one soul per ghost, which is wrong by
+    // a factor of a thousand). The wording is reproduced exactly, because the
+    // wording is what the extension parses; only class names are invented, and
+    // they stay opaque so nothing can lean on them.
+    //
+    // Two details here are load-bearing, not decoration:
+    //   - the host card STATES ITS RATE. No rate, no plan, no click.
+    //   - the tolerance sits in its own element with a sibling that STARTS
+    //     WITH A DIGIT ("60 scouts lost…"). Flattened with textContent those
+    //     weld into "100/6560" and the Haunted warning silently dies. Keep the
+    //     two in separate elements or that regression walks back in unseen.
+    const rites = {
+      souls: 3, dead: 284745,
+      disturbance: 12, tolerance: 50,
+      harvestYield: 1,
+      rate: { souls: 1, dead: 1, per: 1000 },
+      scoutsLost: 60,
+    };
+    const riteCost = (want) => {
+      const blocks = Math.ceil(want / rites.rate.per);
+      return { souls: blocks * rites.rate.souls, dead: blocks * rites.rate.dead };
+    };
+
+    function renderRites() {
+      const panel = document.getElementById('panel');
+      panel.textContent = '';
+      const n = (v) => v.toLocaleString('en-US');
+      // Rebuilt wholesale on every rite, the way an SPA re-renders — which is
+      // what makes stale element references a real hazard worth testing.
+      panel.innerHTML = `
+        <section class="q7">
+          <h2>[ RITES OF REMEMBRANCE ]</h2>
+          <p class="q8">⚰️ WAR CEMETERY</p>
+          <div class="q9">
+            <span class="q9a">💀 ${n(rites.souls)} souls (catalyst — from veteran sacrifice)</span>
+            <span class="q9b">👻 ${n(rites.dead)} raisable dead (your fallen)</span>
+            <span class="q9c">Disturbance ${rites.disturbance}/${rites.tolerance}</span>
+          </div>
+          <p class="q9d">${rites.scoutsLost} scouts lost to the dark.</p>
+          <div class="qa">
+            <div class="qb" data-rite="host">
+              <h3>👻 Spectral Host · +6 disturb</h3>
+              <p>Raise a horde from your fallen — +power on your next raid, or a ghost
+                 column for Conquest. Costs ${rites.rate.dead} dead + ${rites.rate.souls} soul
+                 per ${n(rites.rate.per)} raised. No cap; the pool drains as you raise.</p>
+              <input type="number" value="100" min="1" max="${rites.dead}" aria-label="Ghosts to raise" />
+              <button type="button">PERFORM</button>
+            </div>
+            <div class="qb" data-rite="harvest">
+              <h3>💀 Soul-Harvest · +4 disturb</h3>
+              <p>Call the restless dead to give up their souls. They do not give them gladly.</p>
+              <button type="button">PERFORM · +${n(rites.harvestYield)} SOULS</button>
+            </div>
+          </div>
+        </section>`;
+
+      panel.querySelector('[data-rite="harvest"] button').addEventListener('click', () => {
+        rites.souls += rites.harvestYield;
+        rites.disturbance += 4;
+        document.getElementById('log').textContent = 'rite:harvest';
+        renderRites();
+      });
+      panel.querySelector('[data-rite="host"] button').addEventListener('click', () => {
+        const input = panel.querySelector('[data-rite="host"] input');
+        const want = Number(input.value) || 0;
+        const cost = riteCost(want);
+        if (cost.souls > rites.souls || cost.dead > rites.dead) {
+          document.getElementById('log').textContent = 'rite:host-refused';
+          return;
+        }
+        rites.souls -= cost.souls;
+        rites.dead -= cost.dead;
+        rites.disturbance += 6;
+        document.getElementById('log').textContent = 'rite:host:' + want;
+        renderRites();
+      });
+    }
+
     // Stand in for the SPA router: record clicks instead of navigating, so the
     // test can assert which element the palette actually activated.
     document.addEventListener('click', (e) => {
@@ -86,6 +170,10 @@
       e.preventDefault();
       const href = a.getAttribute('href');
       document.getElementById('log').textContent = 'navigated:' + href;
+
+      // The rites live on their own page, so leaving it takes the panel away.
+      if (href === '/necromancy') renderRites();
+      else document.getElementById('panel').textContent = '';
 
       const rows = SUBNAV[href];
       const nav = document.querySelector('nav.c3d4');

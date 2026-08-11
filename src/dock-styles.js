@@ -417,8 +417,111 @@
   max-width: min(460px, 70vw);
 }
 
+/* --- soul balance badge --------------------------------------------------
+   The rites panel is the only place the game renders a soul count, and no API
+   carries it, so this is the LAST READING rather than a live number. Age is in
+   the button's tooltip; past an hour the badge greys to say so at a glance. */
+.dk-count {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid #3a4250;
+  border-radius: 999px;
+  background: #1b212b;
+  color: #cbb27a;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dk-count.dk-stale { color: #6b7686; border-color: #2c333f; }
+.dk-collapsed .dk-count { display: none; }
+
+/* --- confirmation sheet ---------------------------------------------------
+   Raising a host spends souls, and covering a shortfall sacrifices veterans.
+   Neither happens without this on screen first, showing the numbers actually
+   read off the page. */
+.dk-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483002;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 8, 12, .72);
+}
+.dk-scrim[hidden] { display: none; }
+
+.dk-sheet {
+  width: min(420px, 100%);
+  box-sizing: border-box;
+  padding: 16px 18px;
+  border: 1px solid #2c333f;
+  border-radius: 12px;
+  background: #14181f;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .6);
+}
+.dk-sheet h2 { margin: 0 0 12px; font-size: 14px; color: #e6e9ef; }
+
+.dk-read { margin: 0 0 12px; display: flex; gap: 18px; flex-wrap: wrap; }
+.dk-read[hidden] { display: none; }
+.dk-read div { display: flex; flex-direction: column; gap: 2px; }
+.dk-read dt {
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #6b7686;
+}
+.dk-read dd {
+  margin: 0;
+  font-size: 15px;
+  color: #e6e9ef;
+  font-variant-numeric: tabular-nums;
+}
+
+.dk-sheet-body { margin: 0 0 10px; font-size: 12.5px; color: #cbd2dd; }
+.dk-sheet-warn {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid #6d4b2c;
+  border-radius: 8px;
+  background: #241a12;
+  color: #f0c88a;
+  font-size: 12px;
+}
+.dk-sheet-warn[hidden] { display: none; }
+
+.dk-sheet-actions { flex-wrap: wrap; }
+.dk-actions .dk-danger {
+  background: #7d2f22;
+  border-color: #9c3b2b;
+  color: #ffe6df;
+}
+
+/* --- in-flight entry -----------------------------------------------------
+   A menu entry walks to its door and then waits for the control to appear,
+   which can take seconds. The icon becomes a spinner for that window so the
+   click does not read as having done nothing. */
+.dk-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .22);
+  border-top-color: #d9a441;
+  animation: dk-spin 720ms linear infinite;
+}
+.dk-btn[data-busy="true"] { color: #d9a441 }
+@keyframes dk-spin { to { transform: rotate(360deg) } }
+
 @media (prefers-reduced-motion: reduce) {
   .dk-wrap, .dk-toast { transition: none }
+  /* Keep the affordance, drop the rotation. */
+  .dk-spinner {
+    animation: dk-pulse 1.4s ease-in-out infinite;
+    border-top-color: rgba(255, 255, 255, .22);
+    background: #d9a441;
+  }
+  @keyframes dk-pulse { 50% { opacity: .35 } }
 }
 `;
 })();

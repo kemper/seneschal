@@ -39,6 +39,11 @@
  *         - you would rather pin the name than the address, because you expect
  *           the URL to move and the label to stay.
  *
+ *   { type: "host", souls: 10000, match: "necromancy", door: "/empire" }
+ *       Not a destination at all: raise a spectral host of `souls` ghosts.
+ *       Reaches the rites panel exactly like a `menu` entry, then reads the
+ *       balance and asks before spending anything (see necro.js).
+ *
  * Matching visible labels rather than class names or DOM shape is deliberate:
  * the game reorganised its whole navigation in v1.96 and ships patches most
  * days. Labels and URLs are the parts that survive.
@@ -49,11 +54,32 @@
   const SEN = (globalThis.SEN = globalThis.SEN || {});
 
   const STORAGE_KEY = "seneschal.settings.v1";
-  const VERSION = 1;
+  // v2 added the `host` entry type. See migrate() for what a v1 config gains.
+  const VERSION = 2;
   const SIDES = ["left", "right"];
-  const TYPES = ["url", "menu"];
+  const TYPES = ["url", "menu", "host"];
   const MAX_ITEMS = 40;
   const MAX_LABEL = 32;
+
+  // How big a host a `host` entry raises, and the bounds on that number.
+  // MAX is not a game limit — it is a typo guard: 10,000 souls is already a
+  // large host, and a stray keystroke turning it into 100,000,000 must not be
+  // spendable in one click.
+  const SOULS_DEFAULT = 10000;
+  const SOULS_MIN = 1;
+  const SOULS_MAX = 10000000;
+
+  // Where the rites panel lives. v1.96 filed NECROMANCY under REALM; both are
+  // per-entry overrides precisely because that will move again.
+  const RITES_MATCH = "necromancy";
+  // HARVESTED, not guessed (2026-08-11, against the live site). The rites are
+  // NOT in the Realm row: "⚰ Necromancy" renders in the CHAMPIONS row, and its
+  // path is three levels deep under /expeditions/buildings. An earlier default
+  // sent this entry to /empire, whose row is Empire · Buildings · Market ·
+  // Military · Statecraft — so it walked the wrong door and then correctly
+  // announced it could not find anything called "necromancy". Take this from
+  // catalog.js; never from the label, and never from the group name.
+  const RITES_DOOR = "/expeditions/buildings/necromancy";
 
   /**
    * The out-of-the-box menu, as requested.
@@ -83,6 +109,7 @@
     { id: "seed-holds", icon: "🚩", label: "Holds", type: "url", path: "/holds" },
     { id: "seed-stable", icon: "🐎", label: "Stable", type: "url", path: "/stable" },
     { id: "seed-rankings", icon: "🏆", label: "Rankings", type: "url", path: "/rankings" },
+    { id: "seed-host", icon: "👻", label: "Raise host", type: "host", souls: SOULS_DEFAULT, match: RITES_MATCH, door: RITES_DOOR },
   ];
 
   /**
@@ -155,18 +182,38 @@
       { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
       { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
     ],
+    // The twelve-entry menu, before "Raise host" was appended to it. Anyone
+    // who installed between the harvest and v0.3 is holding exactly this.
+    [
+      { id: "seed-realm", icon: "🏰", label: "Realm", type: "url", path: "/empire" },
+      { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
+      { id: "seed-raids", icon: "🏴", label: "Raids", type: "url", path: "/expeditions" },
+      { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "url", path: "/conquest" },
+      { id: "seed-arena", icon: "⚔️", label: "Arena", type: "url", path: "/arena" },
+      { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+      { id: "seed-spellbook", icon: "🔮", label: "Spellbook", type: "url", path: "/spellbook" },
+      { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
+      { id: "seed-market", icon: "🪙", label: "Market", type: "url", path: "/market" },
+      { id: "seed-holds", icon: "🚩", label: "Holds", type: "url", path: "/holds" },
+      { id: "seed-stable", icon: "🐎", label: "Stable", type: "url", path: "/stable" },
+      { id: "seed-rankings", icon: "🏆", label: "Rankings", type: "url", path: "/rankings" },
+    ],
   ];
 
   /**
    * A comparable string for a menu. Covers every field an entry can carry, so
-   * editing ANY of them — including the icon — makes the menu yours.
+   * editing ANY of them — including the icon, and including the host size —
+   * makes the menu yours. `souls` matters here as much as any of them: someone
+   * who dialled the host down to 500 has expressed a preference about a rite
+   * that SPENDS, and replacing that with our default would be the worst kind of
+   * silent overwrite.
    */
   function fingerprint(items) {
     if (!Array.isArray(items)) return "";
     return items
       .map((it) =>
         it && typeof it === "object"
-          ? [it.id, it.icon, it.label, it.type, it.path, it.match, it.door]
+          ? [it.id, it.icon, it.label, it.type, it.path, it.match, it.door, it.souls]
               .map((v) => (v == null ? "" : String(v)))
               .join("")
           : ""
@@ -309,6 +356,15 @@
     return { kind: "external", href: url.href };
   }
 
+  // --- souls ----------------------------------------------------------------
+
+  /** Coerce a soul count into the allowed range. Never throws; used at render. */
+  function clampSouls(value, fallback = SOULS_DEFAULT) {
+    const n = Math.floor(Number(value));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(SOULS_MAX, Math.max(SOULS_MIN, n));
+  }
+
   // --- items ----------------------------------------------------------------
 
   let idCounter = 0;
@@ -355,11 +411,45 @@
       return { ok: true, item };
     }
 
-    const parsed = parsePattern(raw.match);
-    if (parsed.error) return { ok: false, reason: parsed.error };
-    item.match = String(raw.match).trim();
+    // Field order below mirrors DEFAULT_ITEMS so a normalized entry serialises
+    // byte-identically to the seed it came from — otherwise exporting a config
+    // that has merely been loaded shows a diff.
+    if (type === "host") {
+      // An empty field means "use the default", but a field with something
+      // unreadable in it is an error — silently raising 10,000 when the user
+      // typed "1oooo" would spend souls they did not agree to spend.
+      const soulsRaw = raw.souls;
+      if (soulsRaw === undefined || soulsRaw === null || String(soulsRaw).trim() === "") {
+        item.souls = SOULS_DEFAULT;
+      } else {
+        const n = Number(String(soulsRaw).replace(/[,\s]/g, ""));
+        if (!Number.isFinite(n) || Math.floor(n) !== n) {
+          return { ok: false, reason: "souls must be a whole number" };
+        }
+        if (n < SOULS_MIN || n > SOULS_MAX) {
+          return {
+            ok: false,
+            reason: `souls must be between ${SOULS_MIN} and ${SOULS_MAX.toLocaleString("en-US")}`,
+          };
+        }
+        item.souls = n;
+      }
+    }
 
-    const door = String(raw.door == null ? "" : raw.door).trim();
+    // Both remaining types find their target the same way — by the visible
+    // label of a nav entry, walking through a door first if need be. A `host`
+    // entry defaults that journey so nobody has to know where the game filed
+    // the rites this week, but both fields stay overridable because it moves.
+    const wantsDefaults = type === "host";
+    const rawMatch = String(raw.match == null ? "" : raw.match).trim();
+    const matchSource = rawMatch || (wantsDefaults ? RITES_MATCH : "");
+
+    const parsed = parsePattern(matchSource);
+    if (parsed.error) return { ok: false, reason: parsed.error };
+    item.match = matchSource;
+
+    const rawDoor = String(raw.door == null ? "" : raw.door).trim();
+    const door = rawDoor || (wantsDefaults ? RITES_DOOR : "");
     if (door) {
       if (!classifyPath(door)) {
         return { ok: false, reason: "door must start with / or be an http(s) URL" };
@@ -370,16 +460,43 @@
   }
 
   /**
+   * Bring a config forward a version.
+   *
+   * The only migration so far: v2 introduced the `host` entry, and DEFAULT_ITEMS
+   * is not enough on its own — it is consulted only when a config has NO items,
+   * so anyone already using the quick menu would never see the new button.
+   * Appended once, and only if there is no host entry already; removing it then
+   * sticks, because the version is stamped forward when the config is saved.
+   *
+   * @returns {boolean} whether anything changed, so the caller can persist it.
+   */
+  function migrate(config, fromVersion) {
+    if (fromVersion >= VERSION) return false;
+    // An empty rail is a choice, not an absence. Putting a button back into
+    // one somebody deliberately cleared is exactly the sort of surprise a
+    // migration must not spring.
+    if (!config.dock.items.length) return false;
+    if (config.dock.items.some((it) => it.type === "host")) return false;
+    if (config.dock.items.length >= MAX_ITEMS) return false;
+    const seed = DEFAULT_ITEMS.find((it) => it.type === "host");
+    if (!seed) return false;
+    config.dock.items.push({ ...seed, id: newId() });
+    return true;
+  }
+
+  /**
    * Coerce whatever came out of storage (or an imported JSON blob) into a
    * usable config.
    *
-   * @returns {{config:Object, problems:string[]}} `problems` names every entry
-   *   that had to be dropped, so the caller can say so out loud.
+   * @returns {{config:Object, problems:string[], migrated:boolean}} `problems`
+   *   names every entry that had to be dropped, so the caller can say so out
+   *   loud; `migrated` means the caller should write the result back, without
+   *   which the migration would re-run (and undo a deletion) on every load.
    */
   function normalize(raw) {
     const base = defaults();
     const problems = [];
-    if (!raw || typeof raw !== "object") return { config: base, problems };
+    if (!raw || typeof raw !== "object") return { config: base, problems, migrated: false };
 
     // Accept a bare dock section too, so a config hand-written (or exported by
     // an earlier build) as { side, items } still loads.
@@ -407,9 +524,13 @@
       },
     };
 
+    const from = Number(raw.version) || 1;
+
     if (!Array.isArray(rawDock.items)) {
+      // No item list at all: the defaults already include everything current,
+      // so there is nothing to migrate onto them.
       config.dock.items = base.dock.items;
-      return { config, problems };
+      return { config, problems, migrated: false };
     }
 
     // A menu still identical to one we shipped is ours to keep current.
@@ -435,7 +556,8 @@
     if (rawDock.items.length > MAX_ITEMS) {
       problems.push(`only the first ${MAX_ITEMS} entries were kept`);
     }
-    return { config, problems };
+    const migrated = migrate(config, from);
+    return { config, problems, migrated };
   }
 
   SEN.config = {
@@ -445,15 +567,22 @@
     TYPES,
     MAX_ITEMS,
     MAX_LABEL,
+    SOULS_DEFAULT,
+    SOULS_MIN,
+    SOULS_MAX,
+    RITES_MATCH,
+    RITES_DOOR,
     defaults,
     foldLabel,
     parsePattern,
     matchesPattern,
     classifyPath,
+    clampSouls,
     validateItem,
     migrateItem,
     isShippedMenu,
     normalize,
+    migrate,
     newId,
   };
 })();

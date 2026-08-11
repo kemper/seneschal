@@ -32,6 +32,38 @@ reload the game tab.
 
 Click the toolbar icon for the on/off switches and a way into the full editor.
 
+## Waiting is visible
+
+A quick-menu `menu` entry has to walk to its door and then wait for the named
+control to appear — up to `RESOLVE_MS` (6s). That window used to be completely
+silent, so a click read as having done nothing. Now the entry's icon becomes a
+spinner, it is marked `aria-busy`, and the status line names what is pending;
+all three come down when the control is found and clicked, or when the hunt
+gives up and warns. The indicator is stored as state and repainted after a
+re-render, so rebuilding the rail mid-hunt cannot drop it.
+
+The Cmd-K palette has the same idea for a different case.
+
+## Jumps and actions
+
+Most entries are **jumps**: the palette closes and the page changes, which is
+its own feedback. An entry can instead be an **action** — it carries a
+`run()` returning a promise, and then the palette stays open and narrates it:
+
+- a spinner and a live status line (`role="status"`, so it is announced), with
+  the ring swapped for a pulse under `prefers-reduced-motion`
+- the list goes inert and further keypresses are ignored, so a second Enter on
+  a palette that looks unresponsive cannot fire the action twice — the guard
+  that matters when an action spends real resources
+- past 8s it says so rather than sitting on one frozen string
+- success shows the action's own message and closes after a beat; **failure
+  shows the real error and stays open** so it can be read and retried
+- `Esc` always works, even mid-action; the request is already in flight and
+  cannot be recalled, so dismissing stops the narration, not the work
+
+No actions ship yet — the palette is navigation-only today. This is the
+machinery an action plugs into.
+
 ## How it finds things
 
 Wardenfall's navigation is **contextual**: only the six primary doors
@@ -104,12 +136,13 @@ A rail pinned to the left or right edge, holding whatever you put on it. Add a
 page without leaving the game with the **＋** button on the rail; the **⚙**
 opens the full editor (reorder, rename, change sides, import/export JSON).
 
-Entries come in two kinds, and the second is the interesting one:
+Entries come in three kinds, and the last two are the interesting ones:
 
 | Kind | Field | What happens on click |
 | --- | --- | --- |
 | **Path** | `/market` | Clicks a live anchor for that path if one is on screen, else navigates. A full `https://` URL opens in a new tab. |
 | **Menu entry** | `craftables`, plus an optional door `/empire` | Clicks the navigation entry whose **visible label** matches. If nothing on this page matches, it goes through the door first, waits for the row to render, and clicks it there. |
+| **Raise host** | `10000` souls | Reaches the rites panel the way a menu entry does, reads the balance, and asks before spending anything. [See below.](#raising-a-spectral-host) |
 
 The second kind exists because the game's sub-navigation is contextual:
 `CRAFTABLES`, `ARENA` and `🐗 HUNT` are simply **not on the page** unless you
@@ -145,6 +178,79 @@ things.
 The pending click is held in `sessionStorage` as well as in memory, so it
 survives a full page load and not just same-document routing.
 
+## Raising a spectral host
+
+The **👻 Raise host** entry is the first thing Seneschal does that *spends*
+something. Everything else navigates. This one clicks a rite that consumes
+souls and — when souls are short — sacrifices living veterans to make more.
+Both are irreversible, and that fact shapes the whole design.
+
+Click it and it walks to the rites panel, reads the balance off the page, works
+out what your configured size would actually cost, and shows you that before
+anything is clicked:
+
+- **Enough souls in hand** — one button, naming the size.
+- **Short** — it counts the sacrifices needed (from the yield the harvest
+  button itself advertises) and offers *both* the destructive path and the
+  smaller host your souls already cover. The destructive one is the red one.
+- **Can't tell** — it refuses and says why.
+
+**The price comes off the card, never from an assumption.** The Spectral Host
+rite states its own rate — *"Costs 1 dead + 1 soul per 1,000 raised"* — and
+that sentence is parsed. A card that does not state a rate makes the whole rite
+refuse, because the alternative is inventing the one number that converts a
+host size into a bill. An earlier build assumed one soul per ghost, which
+overpriced a 10,000 host by a factor of a thousand and would have offered to
+sacrifice veterans to cover a shortfall that did not exist.
+
+Two currencies, and they are **not** interchangeable: souls can be harvested,
+the fallen cannot. A host bigger than the pool is blocked outright rather than
+offered as something to sacrifice towards, and the sheet shows both numbers so
+"souls" never stands in for the whole price.
+
+The size lives on the entry, so the ⚙ editor can change it, and you can keep
+several at different sizes. Default 10,000.
+
+The rail shows your last soul reading as a badge. There is no API for it, and
+the number only renders on the rites panel, so it is a **cache** — the tooltip
+gives its age and the badge greys out after an hour. It refreshes whenever the
+panel is on screen, and immediately after a rite.
+
+**What it refuses to do**, all of which are the same rule — never act on a
+number it has not read:
+
+- Perform a rite whose size it cannot determine (no field, and a button that
+  does not state its cost).
+- Walk up from a rite's label to a button and click it, if that walk lands on a
+  container holding a *different* rite. One hop too far is how you sacrifice
+  veterans while trying to raise ghosts.
+- Set the host size without reading the field back to confirm it took. Game
+  UIs built on React ignore a plain `value` write, and the rite would then run
+  on the previous number.
+- Repeat a harvest that did not move the balance. The loop stops on the first
+  click that changes nothing and tells you how many sacrifices were already
+  made — the difference between "the yield was smaller than advertised" and
+  "we are clicking the wrong button forty times".
+- Click a control the game has **disabled**. That is the game's own refusal —
+  no souls, an empty pool, a cooldown — and it gets reported as such rather
+  than clicked into a no-op and blamed on the balance not moving.
+
+> **Measured against the live panel on 2026-08-11.** The structure this was
+> originally built on — a card per rite, a number field, a perform button — held
+> up. The *prices* did not, and neither did the route: the rites are at
+> `/expeditions/buildings/necromancy`, in the **Champions** row, not under
+> Realm where an earlier default sent them.
+>
+> Re-run `tools/harvest-necromancy.js` in DevTools whenever the game moves the
+> panel again, which it will. It reads only; it clicks nothing.
+
+> ⚠️ **The sacrifice path cannot currently run against the live game, on
+> purpose.** The real Soul-Harvest button reads `Sacrifice · +1 💀` — the
+> currency is a glyph, not the word "souls" — so the yield does not parse, the
+> plan comes back blocked, and no veteran is ever sacrificed. Teaching the
+> parser that glyph would arm the only irreversible action here, so it is a
+> decision to take deliberately rather than a gap to close quietly.
+
 ## Layout
 
 ```
@@ -154,6 +260,7 @@ src/catalog.js        the destination list — regenerate with tools/harvest-nav
 src/config.js         settings model for both surfaces (pure, unit-tested)
 src/learned.js        retention policy for remembered nav (pure, unit-tested)
 src/scanner.js        harvests jump targets from the live DOM
+src/necro.js          reads and drives the rites; refuses when unsure
 src/styles.js         palette CSS, injected into its shadow root
 src/dock-styles.js    quick menu CSS, injected into its shadow root
 src/palette.js        index, filter, render, activate
@@ -163,9 +270,13 @@ src/content.js        entry point; mounts both surfaces, binds the Cmd-K chord
 popup/                toolbar popup: the two on/off switches
 options/              the quick menu editor
 tools/harvest-nav.js  DevTools one-shot: walks the doors, prints a catalog
+tools/harvest-necromancy.js
+                      DevTools one-shot: measures the rites panel (read-only)
 test/fuzzy.test.mjs   matcher unit tests
 test/learned.test.mjs retention-policy unit tests
 test/config.test.mjs  settings model: patterns, paths, validation
+test/pending.test.mjs pending-state unit tests
+test/necro.test.mjs   rites: balance parsing, plan arithmetic, refusals
 test/e2e.py           loads the real unpacked extension in Chromium
 test/dock.py          drives the quick menu, options page and popup
 test/harvest.py       proves the harvester finds nav hidden behind other doors
@@ -263,14 +374,16 @@ through. It was a 404 page. **Never infer a path from a label.**
 ```bash
 node --test test/fuzzy.test.mjs     # 12 matcher unit tests
 node --test test/learned.test.mjs   # 11 retention-policy unit tests
-node --test test/config.test.mjs    # 27 settings-model unit tests
+node --test test/config.test.mjs    # 43 settings-model unit tests
 node --test test/heroes.test.mjs    # 14 hero, siege and heal-all parsers
+node --test test/pending.test.mjs   # 11 pending-state unit tests
+node --test test/necro.test.mjs     # 42 rites parsing / planning unit tests
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 61 checks, quick menu + hero panel
+python3 test/dock.py                # 111 checks, quick menu + hero panel + rites
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 155 pass. The Python tests need Playwright; `test/chromium_path.py` locates
+All 285 pass. The Python tests need Playwright; `test/chromium_path.py` locates
 a Chromium on either Linux or macOS, overridable with `SENESCHAL_CHROMIUM`.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the
@@ -283,13 +396,20 @@ scanner is not secretly depending on readable selectors.
 popup as real extension pages: it asserts that flipping a switch there changes
 the live dock in the game tab.
 
+`dock.py` also drives the whole rite flow against a reconstruction of the rites
+panel in the fixture: the walk to it, the confirmation, six harvests and a
+raise, and the arithmetic at the end.
+
 Every bug found during development was caught by that harness — or by looking
 at a screenshot — rather than by reading the code: an author `display: flex`
 silently overriding the `hidden` attribute, a backtick inside a CSS comment
 terminating the JS template literal that holds the stylesheet, a harvester that
 abandoned you on whatever page its walk happened to end on, a `Recent` heading
-that never rendered because the group was read off the wrong object, and a rail
-that shoved itself sideways every time the add form opened.
+that never rendered because the group was read off the wrong object, a rail
+that shoved itself sideways every time the add form opened, and — with a fully
+green suite — a confirmation dialog crushed to 160px against the screen edge,
+because the rail's `transform` had quietly made it the containing block for a
+`position: fixed` child.
 
 ## Where this goes next
 
@@ -333,11 +453,21 @@ entry offers. So the failure is made loud instead of being engineered away: walk
 the door, wait, and if the entry never appears, say which pattern missed. Fixing
 it is a one-field edit in the options page.
 
+**The rites are the least stable thing here — and the only thing that spends
+resources.** Their vocabulary comes from a page-text capture and their
+structure is a reconstruction (see the warning above). That combination would
+normally be reckless, so the code fails closed: it reads a number before every
+decision, refuses anything ambiguous, verifies every write, and stops the
+moment a click does not do what it should. The worst realistic outcome of the
+guess being wrong is a warning and nothing performed. Run the recon script and
+this joins "stable by construction" with the rest.
+
 **Known limits, accepted.** A renamed destination lingers in the remembered
 index until its 90-day TTL expires — clicking a stale one falls through to a
 plain navigation. Two different destinations sharing one label would collapse
-into a single entry. Neither is silent-wrong in a way that costs you anything
-worse than a re-click.
+into a single entry. The soul badge is a cache, so it can be stale until you
+next open the rites panel; its age is in the tooltip. None of these is
+silent-wrong in a way that costs you anything worse than a re-click.
 
 ## Name
 

@@ -45,10 +45,13 @@
     } catch {
       say("Could not read saved settings; showing the defaults.", true);
     }
-    const { config, problems } = CFG.normalize(stored);
+    const { config, problems, migrated } = CFG.normalize(stored);
     state = config;
     if (problems.length) say(problems.join(" · "), true);
     renderAll();
+    // Persist a version bump straight away, so a newly-added default entry the
+    // user then deletes stays deleted instead of coming back next load.
+    if (migrated) save("Added the new Raise host entry.");
   }
 
   /**
@@ -129,7 +132,7 @@
 
     const type = document.createElement("select");
     type.setAttribute("aria-label", "Entry type");
-    for (const [value, text] of [["url", "Path"], ["menu", "Menu entry"]]) {
+    for (const [value, text] of [["url", "Path"], ["menu", "Menu entry"], ["host", "Raise host"]]) {
       const opt = document.createElement("option");
       opt.value = value;
       opt.textContent = text;
@@ -153,11 +156,28 @@
         }, "Path")
       );
     } else {
-      stack.appendChild(
-        field("craftables  or  /^hunt/i", item.match, (v) => {
-          item.match = v;
+      // A host entry gets its size first, then the same how-to-get-there
+      // fields a menu entry uses — the rites panel is reached the same way.
+      if (item.type === "host") {
+        const souls = field(String(CFG.SOULS_DEFAULT), item.souls, (v) => {
+          item.souls = v;
           touch();
-        }, "Menu entry name")
+        }, "Souls to raise");
+        souls.type = "number";
+        souls.min = String(CFG.SOULS_MIN);
+        souls.step = "1";
+        stack.appendChild(souls);
+      }
+      stack.appendChild(
+        field(
+          item.type === "host" ? "necromancy" : "craftables  or  /^hunt/i",
+          item.match,
+          (v) => {
+            item.match = v;
+            touch();
+          },
+          item.type === "host" ? "Rites page name" : "Menu entry name"
+        )
       );
       stack.appendChild(
         field("Open first, if needed: /empire", item.door, (v) => {
