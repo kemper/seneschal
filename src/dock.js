@@ -29,6 +29,21 @@
   const PENDING_KEY = "seneschal.pending.v1";
   const TOAST_MS = 7000;
 
+  // The soul balance is rendered only on the rites panel and no API exposes
+  // it, so the rail shows the LAST READING rather than a live number. Kept
+  // under its own key: it churns, and settings do not.
+  const SOULS_KEY = "seneschal.souls.v1";
+  // How often to look for a balance on screen. Only runs when a `host` entry
+  // exists, and reads textContent, never innerText (CLAUDE.md finding 6).
+  const SOULS_POLL_MS = 4000;
+  // Past this the badge greys out: souls move with every raid casualty.
+  const SOULS_FRESH_MS = 60 * 60 * 1000;
+  // How long a rite click gets to move the balance before it is judged a
+  // no-op. Exceeding this STOPS the run — it never re-clicks a sacrifice.
+  const RITE_SETTLE_MS = 5000;
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
   const store = {
     async get(key, fallback) {
       try {
@@ -79,31 +94,46 @@
       this.settings = SEN.config.defaults();
       this.watcher = null;
       this.toastTimer = null;
+      this.souls = null; // last balance reading: {souls, disturbance, tolerance, at}
+      this.soulsTimer = null;
+      this.running = false; // a rite is mid-flight; the rail is inert
       this._build();
     }
 
     async init() {
       const stored = await store.get(SEN.config.STORAGE_KEY, null);
-      const { config, problems } = SEN.config.normalize(stored);
+      const { config, problems, migrated } = SEN.config.normalize(stored);
       this.settings = config;
       if (problems.length) {
         console.warn("[Seneschal] quick menu config:", problems.join(" · "));
         this.toast(`Quick menu: ${problems[0]}`);
       }
+      // Stamp the migration forward, or it re-runs on every page load and
+      // keeps resurrecting an entry the user deleted.
+      if (migrated) await store.set(SEN.config.STORAGE_KEY, this.settings);
+
+      this.souls = await store.get(SOULS_KEY, null);
       this.render();
 
       // Keep every tab in step with the options page (and with each other).
       try {
         chrome.storage.onChanged.addListener((changes, area) => {
-          if (area !== "local" || !changes[SEN.config.STORAGE_KEY]) return;
-          this.settings = SEN.config.normalize(changes[SEN.config.STORAGE_KEY].newValue).config;
-          this.render();
+          if (area !== "local") return;
+          if (changes[SEN.config.STORAGE_KEY]) {
+            this.settings = SEN.config.normalize(changes[SEN.config.STORAGE_KEY].newValue).config;
+            this.render();
+          }
+          if (changes[SOULS_KEY]) {
+            this.souls = changes[SOULS_KEY].newValue || null;
+            this._paintSouls();
+          }
         });
       } catch {
         /* no live sync; a reload still picks up changes */
       }
 
       this._resumePending();
+      this._watchSouls();
     }
 
     // --- DOM -----------------------------------------------------------------
@@ -134,18 +164,24 @@
             <select id="dk-type">
               <option value="url">A URL</option>
               <option value="menu">A menu entry, by name</option>
+              <option value="host">Raise a spectral host</option>
             </select>
           </div>
           <div class="dk-field" data-for="url">
             <label for="dk-path">Path</label>
             <input id="dk-path" type="text" autocomplete="off" spellcheck="false" placeholder="/market" />
           </div>
-          <div class="dk-field" data-for="menu" hidden>
+          <div class="dk-field" data-for="host" hidden>
+            <label for="dk-souls">Souls to raise</label>
+            <input id="dk-souls" type="number" min="1" step="1" autocomplete="off" placeholder="10000" />
+            <span class="dk-hint">Always asks before spending anything.</span>
+          </div>
+          <div class="dk-field" data-for="menu host" hidden>
             <label for="dk-match">Menu entry name</label>
             <input id="dk-match" type="text" autocomplete="off" spellcheck="false" placeholder="craftables" />
             <span class="dk-hint">Matched against what the link says. /regex/ works too.</span>
           </div>
-          <div class="dk-field" data-for="menu" hidden>
+          <div class="dk-field" data-for="menu host" hidden>
             <label for="dk-door">Open this first, if needed</label>
             <input id="dk-door" type="text" autocomplete="off" spellcheck="false" placeholder="/empire" />
           </div>
@@ -159,12 +195,30 @@
         <div class="dk-rail" role="navigation" aria-label="Seneschal quick menu"></div>
         <div class="dk-toast" role="status" aria-live="polite" hidden></div>`;
 
+      // OUTSIDE .dk-wrap, deliberately. The wrap carries a `transform` to
+      // centre itself vertically, and a transformed element becomes the
+      // containing block for its `position: fixed` descendants — so a scrim
+      // nested inside it is not full-screen at all, it is confined to the
+      // rail's own box (a 160px-wide sheet crushed against the edge).
+      this.scrim = document.createElement("div");
+      this.scrim.className = "dk-scrim";
+      this.scrim.hidden = true;
+      this.scrim.innerHTML = `
+        <div class="dk-sheet" role="dialog" aria-modal="true" aria-labelledby="dk-sheet-title">
+          <h2 id="dk-sheet-title"></h2>
+          <dl class="dk-read"></dl>
+          <p class="dk-sheet-body"></p>
+          <p class="dk-sheet-warn" hidden></p>
+          <div class="dk-actions dk-sheet-actions"></div>
+        </div>`;
+
       this.rail = this.wrap.querySelector(".dk-rail");
       this.tab = this.wrap.querySelector(".dk-tab");
       this.form = this.wrap.querySelector(".dk-form");
       this.toastEl = this.wrap.querySelector(".dk-toast");
       this.errorEl = this.wrap.querySelector(".dk-error");
       this.typeSelect = this.wrap.querySelector("#dk-type");
+      this.sheet = this.scrim.querySelector(".dk-sheet");
 
       this.tab.addEventListener("click", () => this._setCollapsed(!this.settings.dock.collapsed));
       this.typeSelect.addEventListener("change", () => this._syncFormFields());
@@ -181,7 +235,7 @@
         }
       });
 
-      this.root.append(style, this.wrap);
+      this.root.append(style, this.wrap, this.scrim);
       // documentElement, not body: the game re-renders body subtrees on a timer.
       document.documentElement.appendChild(this.host);
     }
@@ -218,6 +272,7 @@
       );
       this.rail.append(sep, tools);
       this._paintPending();
+      this._paintSouls();
 
       if (!this.form.hidden) this._closeForm();
     }
@@ -294,10 +349,78 @@
       btn.type = "button";
       btn.className = "dk-btn";
       btn.dataset.id = item.id;
-      btn.title = item.type === "url" ? `${item.label} — ${item.path}` : `${item.label} — menu entry "${item.match}"`;
-      btn.append(this._span("dk-icon", item.icon || (item.type === "menu" ? "◈" : "•")), this._span("dk-text", item.label));
+      btn.dataset.type = item.type;
+      const fallbackIcon = item.type === "url" ? "•" : item.type === "host" ? "👻" : "◈";
+      btn.title = this._itemTitle(item);
+      btn.append(this._span("dk-icon", item.icon || fallbackIcon), this._span("dk-text", item.label));
+      if (item.type === "host") {
+        // Filled in by _paintSouls, which also runs after every re-render.
+        const badge = this._span("dk-count", "");
+        badge.dataset.role = "souls";
+        btn.appendChild(badge);
+      }
       btn.addEventListener("click", () => this.activate(item));
       return btn;
+    }
+
+    _itemTitle(item) {
+      if (item.type === "url") return `${item.label} — ${item.path}`;
+      if (item.type === "menu") return `${item.label} — menu entry "${item.match}"`;
+      const size = SEN.config.clampSouls(item.souls);
+      const base = `${item.label} — raise a spectral host of ${SEN.necro.formatCount(size)}`;
+      if (!this.souls) return `${base}\nSoul balance not read yet`;
+      return `${base}\n${SEN.necro.formatCount(this.souls.souls)} souls, read ${SEN.necro.formatAge(this.souls.at)}`;
+    }
+
+    /**
+     * Write the cached balance onto every host entry. Separate from render()
+     * because the balance updates on a poll and re-rendering the whole rail
+     * four times a minute would fight with the pending spinner.
+     */
+    _paintSouls() {
+      if (!this.rail) return;
+      const fresh = this.souls && Date.now() - (this.souls.at || 0) < SOULS_FRESH_MS;
+      for (const btn of this.rail.querySelectorAll('.dk-btn[data-type="host"]')) {
+        const badge = btn.querySelector('[data-role="souls"]');
+        if (!badge) continue;
+        badge.textContent = this.souls ? SEN.necro.formatShort(this.souls.souls) : "—";
+        badge.classList.toggle("dk-stale", !fresh);
+        const item = this.settings.dock.items.find((it) => it.id === btn.dataset.id);
+        if (item) btn.title = this._itemTitle(item);
+      }
+    }
+
+    /**
+     * Notice the balance whenever the rites panel is on screen.
+     *
+     * This is a poll rather than an observer because the number changes for
+     * reasons that are not DOM mutations we can attribute (a raid resolving
+     * elsewhere), and it costs one textContent read with a substring guard.
+     * It does not run at all unless a host entry is configured, so users who
+     * do not use the feature pay nothing.
+     */
+    _watchSouls() {
+      clearInterval(this.soulsTimer);
+      const look = () => {
+        if (!this.settings.dock.items.some((it) => it.type === "host")) return;
+        const reading = SEN.necro.readBalance(document);
+        if (reading) this._recordSouls(reading);
+      };
+      look();
+      this.soulsTimer = setInterval(look, SOULS_POLL_MS);
+    }
+
+    _recordSouls(reading) {
+      const next = { ...reading, at: Date.now() };
+      const same =
+        this.souls &&
+        this.souls.souls === next.souls &&
+        this.souls.disturbance === next.disturbance;
+      this.souls = next;
+      this._paintSouls();
+      // Only persist a real change: writing every four seconds would churn
+      // storage and wake every other tab's onChanged listener for nothing.
+      if (!same) store.set(SOULS_KEY, next);
     }
 
     _toolButton(glyph, title, onClick) {
@@ -313,6 +436,10 @@
 
     // --- activation ----------------------------------------------------------
     activate(item) {
+      // A rite spends resources and takes several steps; a second click
+      // partway through would start a parallel run against the same page.
+      if (this.running) return;
+      if (item.type === "host") return this._raiseHost(item);
       if (item.type === "menu") return this._openMenuEntry(item);
       return this._goto(item.path);
     }
@@ -397,50 +524,60 @@
 
     /**
      * Hunt for a nav entry matching `pending.match` until it appears or the
-     * deadline passes. A MutationObserver catches the sub-nav swap; the
-     * interval is a backstop for a render that mutates nothing we can see.
+     * deadline passes, then click it. A MutationObserver catches the sub-nav
+     * swap; the interval is a backstop for a render that mutates nothing we
+     * can see.
+     *
+     * @param {Object} pending
+     * @param {boolean} [quiet] suppress the not-found toast, for callers that
+     *   report the failure in their own words (the rite flow).
+     * @returns {Promise<Element|null>} the element clicked, or null.
      */
-    _watchFor(pending) {
+    _watchFor(pending, quiet = false) {
       this._stopWatching();
       // Walking the door and waiting for the control can take the better part
       // of RESOLVE_MS, during which nothing on screen moves. Without this the
       // click reads as having done nothing.
       this._setPending(pending);
 
-      const finish = (found) => {
-        this._stopWatching();
-        session.clear(PENDING_KEY);
-        this._setPending(null);
-        if (found) {
-          found.click();
-          return;
-        }
-        // LOUD failure. A pattern that stopped matching after a patch must not
-        // look like a button that simply does nothing.
-        const message = `Quick menu: could not find a menu entry matching "${pending.match}".`;
-        console.warn("[Seneschal]", message);
-        this.toast(message);
-      };
+      return new Promise((resolve) => {
+        const finish = (found) => {
+          this._stopWatching();
+          session.clear(PENDING_KEY);
+          this._setPending(null);
+          if (found) {
+            found.click();
+            resolve(found);
+            return;
+          }
+          // LOUD failure. A pattern that stopped matching after a patch must
+          // not look like a button that simply does nothing.
+          const message = `Quick menu: could not find a menu entry matching "${pending.match}".`;
+          console.warn("[Seneschal]", message);
+          if (!quiet) this.toast(message);
+          resolve(null);
+        };
 
-      const attempt = () => {
-        const el = this._findNavMatch(pending.match);
-        if (el) {
-          finish(el);
-          return true;
-        }
-        if (Date.now() >= pending.expires) {
-          finish(null);
-          return true;
-        }
-        return false;
-      };
+        const attempt = () => {
+          const el = this._findNavMatch(pending.match);
+          if (el) {
+            finish(el);
+            return true;
+          }
+          if (Date.now() >= pending.expires) {
+            finish(null);
+            return true;
+          }
+          return false;
+        };
 
-      if (attempt()) return;
+        if (attempt()) return;
 
-      const observer = new MutationObserver(() => attempt());
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-      const interval = setInterval(attempt, 250);
-      this.watcher = { observer, interval };
+        const observer = new MutationObserver(() => attempt());
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+        const interval = setInterval(attempt, 250);
+        this.watcher = { observer, interval };
+      });
     }
 
     _stopWatching() {
@@ -481,6 +618,370 @@
       return scored.length ? scored[0].el : null;
     }
 
+    // --- rites ---------------------------------------------------------------
+
+    /**
+     * Raise a spectral host.
+     *
+     * The one thing in this extension that SPENDS something, so the shape is
+     * deliberately: reach the panel → read it → work out the consequences →
+     * show them → only then click. Every step can bail, and bailing is loud.
+     * Nothing here acts on a number it has not read off the live page.
+     */
+    async _raiseHost(item) {
+      this.running = true;
+      const busy = (message) => this._setPending({ id: item.id, label: message });
+      const refuse = (message) => {
+        console.warn("[Seneschal]", message);
+        this.toast(`Raise host: ${message}`);
+      };
+
+      try {
+        const reading = await this._reachRites(item);
+        if (!reading) {
+          refuse(
+            `could not find the soul balance. Check that "${item.match}" still opens the rites panel — the game moves it.`
+          );
+          return;
+        }
+        busy("Reading the rites…");
+
+        const host = SEN.necro.findRiteCard("host");
+        if (!host) {
+          refuse("no Spectral Host rite on this page, or it sits too close to another rite to tell them apart.");
+          return;
+        }
+        const hostButton = SEN.necro.performButton(host);
+        if (!hostButton) {
+          refuse("found the Spectral Host rite but not the button that performs it.");
+          return;
+        }
+
+        // How the size of the host gets decided. If we cannot tell, we stop:
+        // performing a rite without knowing what it spends is the one thing
+        // this must never do.
+        const sizing = this._sizing(host, hostButton);
+        if (sizing.kind === "unknown") {
+          refuse(
+            "the Spectral Host rite has no size field and its button does not say what it costs, so there is no way to know what performing it would spend."
+          );
+          return;
+        }
+        const want = sizing.kind === "fixed" ? sizing.cost : SEN.config.clampSouls(item.souls);
+
+        const harvest = SEN.necro.findRiteCard("harvest");
+        const harvestButton = harvest ? SEN.necro.performButton(harvest) : null;
+        const perHarvest = harvestButton
+          ? SEN.necro.parseSoulDelta(SEN.scanner.labelOf(harvestButton))
+          : null;
+
+        const plan = SEN.necro.plan({
+          have: reading.souls,
+          want,
+          perHarvest: perHarvest && perHarvest > 0 ? perHarvest : null,
+          disturbance: reading.disturbance,
+          tolerance: reading.tolerance,
+          raiseDisturb: SEN.necro.parseDisturbDelta(host.el.textContent),
+          harvestDisturb: harvest ? SEN.necro.parseDisturbDelta(harvest.el.textContent) : null,
+        });
+
+        this._setPending(null);
+        const choice = await this._confirmRite(plan, sizing);
+        if (!choice) return; // cancelled, or dismissed
+
+        const target = choice === "raise-less" ? plan.canRaiseInstead : plan.want;
+        const harvests = choice === "harvest" ? plan.harvests : 0;
+        await this._performRite({ item, target, harvests, sizing, busy });
+      } catch (err) {
+        const message = (err && err.message) || String(err);
+        console.warn("[Seneschal] raise host:", err);
+        this.toast(`Raise host: ${message}`);
+      } finally {
+        this.running = false;
+        this._setPending(null);
+      }
+    }
+
+    /**
+     * How this rite decides how many ghosts to raise.
+     *   input   — a field we can set, so the configured size applies
+     *   fixed   — no field, but the button states its cost, so the rite has one
+     *             size and we can still tell the user exactly what it spends
+     *   unknown — neither; refuse
+     */
+    _sizing(card, button) {
+      const input = SEN.necro.sizeInput(card);
+      if (input) return { kind: "input", input };
+      const delta = SEN.necro.parseSoulDelta(SEN.scanner.labelOf(button));
+      if (delta != null && delta < 0) return { kind: "fixed", cost: Math.abs(delta) };
+      return { kind: "unknown" };
+    }
+
+    /**
+     * Get to the rites panel and come back with a balance reading.
+     *
+     * Arrival is defined as "a soul balance is readable", not "the nav click
+     * happened" — the panel renders asynchronously, and a reading is the only
+     * proof we are actually looking at it.
+     */
+    async _reachRites(item) {
+      const here = SEN.necro.readBalance(document);
+      if (here) return here;
+
+      const onPage = this._findNavMatch(item.match);
+      if (onPage) {
+        onPage.click();
+        return await this._awaitBalance();
+      }
+      if (!item.door) return null;
+
+      const pending = {
+        id: item.id,
+        match: item.match,
+        label: item.label,
+        expires: Date.now() + RESOLVE_MS,
+      };
+      session.write(PENDING_KEY, pending);
+      if (!this._goto(item.door)) {
+        this._stopWatching();
+        session.clear(PENDING_KEY);
+        return null;
+      }
+      // quiet: a miss here is reported by _raiseHost in rite-specific words.
+      const found = await this._watchFor(pending, true);
+      if (!found) return null;
+      return await this._awaitBalance();
+    }
+
+    async _awaitBalance(ms = RESOLVE_MS) {
+      const stop = Date.now() + ms;
+      for (;;) {
+        const reading = SEN.necro.readBalance(document);
+        if (reading) {
+          this._recordSouls(reading);
+          return reading;
+        }
+        if (Date.now() >= stop) return null;
+        await sleep(150);
+      }
+    }
+
+    /**
+     * Wait for a rite to actually change the balance.
+     * @returns {Object|null} the new reading, or null if nothing moved — which
+     *   the caller must treat as "stop", never as "click it again".
+     */
+    async _awaitSoulChange(before, ms = RITE_SETTLE_MS) {
+      const stop = Date.now() + ms;
+      for (;;) {
+        await sleep(150);
+        const reading = SEN.necro.readBalance(document);
+        if (reading && reading.souls !== before) {
+          this._recordSouls(reading);
+          return reading;
+        }
+        if (Date.now() >= stop) return null;
+      }
+    }
+
+    /**
+     * Do the thing the user just approved.
+     *
+     * The harvest loop re-finds its button every pass (the panel re-renders
+     * after each rite, so a held reference goes stale) and stops dead the
+     * first time a click fails to move the balance. That check is the
+     * difference between "the yield was smaller than advertised" and "we are
+     * clicking something that is not the harvest button, forty times".
+     */
+    async _performRite({ item, target, harvests, sizing, busy }) {
+      let done = 0;
+      for (let i = 0; i < harvests; i++) {
+        busy(`Soul-Harvest ${i + 1} of ${harvests}…`);
+        const card = SEN.necro.findRiteCard("harvest");
+        const button = card ? SEN.necro.performButton(card) : null;
+        if (!button) {
+          throw new Error(
+            `the Soul-Harvest button vanished after ${done} sacrifice${done === 1 ? "" : "s"} — stopped, nothing raised.`
+          );
+        }
+        const before = (SEN.necro.readBalance(document) || {}).souls;
+        button.click();
+        const after = await this._awaitSoulChange(before);
+        if (!after) {
+          throw new Error(
+            `Soul-Harvest ${i + 1} did not change the balance — stopped after ${done} sacrifice${done === 1 ? "" : "s"}, nothing raised.`
+          );
+        }
+        done += 1;
+      }
+
+      busy(`Raising ${SEN.necro.formatCount(target)}…`);
+      // Re-find: the harvests above re-rendered the panel underneath us.
+      const card = SEN.necro.findRiteCard("host");
+      const button = card ? SEN.necro.performButton(card) : null;
+      if (!button) throw new Error("the Spectral Host button vanished before the raise.");
+
+      if (sizing.kind === "input") {
+        const input = SEN.necro.sizeInput(card);
+        if (!input) throw new Error("the host size field vanished before the raise.");
+        if (!SEN.necro.setNumber(input, target)) {
+          throw new Error(
+            `could not set the host size to ${SEN.necro.formatCount(target)} — it read back as "${input.value}". Nothing performed.`
+          );
+        }
+      }
+
+      const before = (SEN.necro.readBalance(document) || {}).souls;
+      button.click();
+      const after = await this._awaitSoulChange(before);
+      this._setPending(null);
+      if (!after) {
+        this.toast(
+          `Raise host: clicked Spectral Host but the balance did not move${done ? ` (${done} sacrifice${done === 1 ? "" : "s"} were made)` : ""}. Check the page.`
+        );
+        return;
+      }
+      const spent = before - after.souls;
+      this.toast(
+        `Raised a host — ${SEN.necro.formatCount(spent)} souls spent, ${SEN.necro.formatCount(after.souls)} left.`
+      );
+    }
+
+    // --- confirmation sheet ---------------------------------------------------
+
+    /** Build the modal for a plan and wait for the user's answer. */
+    _confirmRite(plan, sizing) {
+      const n = SEN.necro;
+      const readings = [["Souls", n.formatCount(plan.have)]];
+      if (plan.disturbance != null) {
+        readings.push([
+          "Disturbance",
+          plan.tolerance != null
+            ? `${n.formatCount(plan.disturbance)} / ${n.formatCount(plan.tolerance)}`
+            : n.formatCount(plan.disturbance),
+        ]);
+      }
+
+      let body = n.describe(plan);
+      if (sizing.kind === "fixed") {
+        body += " This rite has one size and does not take a number, so the size in your settings does not apply.";
+      }
+
+      const warnings = [];
+      if (plan.disturbanceWarning) {
+        warnings.push(
+          `This would take Disturbance to ${n.formatCount(plan.disturbanceAfter)}, past the ${n.formatCount(plan.tolerance)} the grounds tolerate — they turn Haunted.`
+        );
+      }
+      if (plan.kind === "harvest") {
+        warnings.push("Soul-Harvest sacrifices living veterans. It cannot be undone.");
+      }
+
+      const actions = [];
+      if (plan.kind === "raise") {
+        actions.push({ id: "raise", label: `Raise ${n.formatCount(plan.want)}`, kind: "primary" });
+      } else if (plan.kind === "harvest") {
+        actions.push({
+          id: "harvest",
+          label: `Sacrifice ${plan.harvests}×, then raise`,
+          kind: "danger",
+        });
+        if (plan.canRaiseInstead > 0 && sizing.kind === "input") {
+          actions.push({ id: "raise-less", label: `Raise ${n.formatCount(plan.canRaiseInstead)} instead` });
+        }
+      } else if (plan.canRaiseInstead > 0 && sizing.kind === "input") {
+        actions.push({ id: "raise-less", label: `Raise ${n.formatCount(plan.canRaiseInstead)} instead`, kind: "primary" });
+      }
+
+      return this._openSheet({
+        title: "Raise a spectral host",
+        readings,
+        body,
+        warnings,
+        actions,
+        // On anything destructive or refused, Cancel holds focus so Enter is
+        // never the key that spends something.
+        focus: plan.kind === "raise" ? "primary" : "cancel",
+      });
+    }
+
+    /**
+     * Show the sheet. Resolves with an action id, or null for cancel.
+     * Only one can be open at a time — activate() gates on `running`.
+     */
+    _openSheet({ title, readings = [], body = "", warnings = [], actions = [], focus = "cancel" }) {
+      const sheet = this.sheet;
+      sheet.querySelector("h2").textContent = title;
+
+      const dl = sheet.querySelector(".dk-read");
+      dl.textContent = "";
+      for (const [term, value] of readings) {
+        const pair = document.createElement("div");
+        const dt = document.createElement("dt");
+        dt.textContent = term;
+        const dd = document.createElement("dd");
+        dd.textContent = value;
+        pair.append(dt, dd);
+        dl.appendChild(pair);
+      }
+      dl.hidden = !readings.length;
+
+      sheet.querySelector(".dk-sheet-body").textContent = body;
+      const warn = sheet.querySelector(".dk-sheet-warn");
+      warn.textContent = warnings.join(" ");
+      warn.hidden = !warnings.length;
+
+      const bar = sheet.querySelector(".dk-sheet-actions");
+      bar.textContent = "";
+
+      return new Promise((resolve) => {
+        let settled = false;
+        const close = (value) => {
+          if (settled) return;
+          settled = true;
+          document.removeEventListener("keydown", onKey, true);
+          this.scrim.hidden = true;
+          resolve(value);
+        };
+
+        const onKey = (e) => {
+          if (e.key !== "Escape") return;
+          e.preventDefault();
+          // The game handles keys too, and a re-render mid-dialog is exactly
+          // the kind of thing that eats the click that follows.
+          e.stopPropagation();
+          close(null);
+        };
+        document.addEventListener("keydown", onKey, true);
+
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "dk-cancel";
+        cancel.textContent = "Cancel";
+        cancel.addEventListener("click", () => close(null));
+
+        const made = actions.map((action) => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "dk-primary" + (action.kind === "danger" ? " dk-danger" : "");
+          btn.textContent = action.label;
+          btn.addEventListener("click", () => close(action.id));
+          return btn;
+        });
+
+        bar.append(cancel, ...made);
+        this.scrim.hidden = false;
+        // Clicking away is a cancel, but only on the scrim itself — a click
+        // that started inside the sheet must not dismiss it.
+        this.scrim.onclick = (e) => {
+          if (e.target === this.scrim) close(null);
+        };
+
+        const preferred = focus === "primary" ? made[0] || cancel : cancel;
+        preferred.focus();
+      });
+    }
+
     // --- add form ------------------------------------------------------------
     _openForm() {
       this.form.hidden = false;
@@ -490,6 +991,7 @@
       this.wrap.querySelector("#dk-path").value = location.pathname + location.search;
       this.wrap.querySelector("#dk-match").value = "";
       this.wrap.querySelector("#dk-door").value = "";
+      this.wrap.querySelector("#dk-souls").value = String(SEN.config.SOULS_DEFAULT);
       this.typeSelect.value = "url";
       this._syncFormFields();
       label.focus();
@@ -504,7 +1006,9 @@
     _syncFormFields() {
       const type = this.typeSelect.value;
       this.wrap.querySelectorAll(".dk-field[data-for]").forEach((field) => {
-        field.hidden = field.dataset.for !== type;
+        // `data-for` holds a space-separated list: a host entry needs the same
+        // match/door fields a menu entry does.
+        field.hidden = !field.dataset.for.split(/\s+/).includes(type);
       });
     }
 
@@ -537,6 +1041,7 @@
         path: this.wrap.querySelector("#dk-path").value,
         match: this.wrap.querySelector("#dk-match").value,
         door: this.wrap.querySelector("#dk-door").value,
+        souls: this.wrap.querySelector("#dk-souls").value,
       };
 
       const result = SEN.config.validateItem(draft);

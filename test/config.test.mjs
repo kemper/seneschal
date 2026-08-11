@@ -157,7 +157,9 @@ test("each surface can be switched off independently", () => {
 test("a flat dock-only object still loads, so an older export is not lost", () => {
   const { config } = CFG.normalize({ side: "left", items: [{ label: "M", type: "url", path: "/m" }] });
   assert.equal(config.dock.side, "left");
-  assert.deepEqual(mine(config.dock.items).map((i) => i.label), ["M"]);
+  // A versionless export is by definition pre-v2, so it also picks up the
+  // migration. What matters here is that the user's own entry survives.
+  assert.ok(mine(config.dock.items).map((i) => i.label).includes("M"));
   assert.equal(config.palette.enabled, true);
 });
 
@@ -172,7 +174,10 @@ test("an explicitly empty menu is honoured, not overwritten with defaults", () =
 });
 
 test("bad entries are dropped AND reported, never silently swallowed", () => {
+  // Current version, so this exercises validation alone — the v1→v2 migration
+  // has its own tests in necro.test.mjs.
   const { config, problems } = CFG.normalize({
+    version: CFG.VERSION,
     dock: {
       items: [
         { label: "Good", type: "url", path: "/good" },
@@ -188,6 +193,7 @@ test("bad entries are dropped AND reported, never silently swallowed", () => {
 
 test("duplicate ids are re-minted so edits cannot hit the wrong row", () => {
   const { config } = CFG.normalize({
+    version: CFG.VERSION,
     dock: {
       items: [
         { id: "same", label: "One", type: "url", path: "/one" },

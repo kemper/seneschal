@@ -49,6 +49,7 @@
     <a href="/military">MILITARY ●</a>
     <a href="/diplomacy">STATECRAFT ●</a>
     <a href="/craftables">🛠 CRAFTABLES ●</a>
+    <a href="/necromancy">⚰ NECROMANCY ●</a>
     <!-- No ● marker: stands in for the game restyling that dot away. It must
          still be indexed and learned, on the strength of living in a <nav>. -->
     <a href="/ledger">LEDGER</a>
@@ -57,6 +58,8 @@
   <main>
     <h1>Empire</h1>
     <p id="log">no navigation yet</p>
+    <!-- The rites panel renders in here when NECROMANCY is reached. -->
+    <div id="panel"></div>
   </main>
 
   <script>
@@ -69,6 +72,7 @@
         ['BUILDINGS ●', '/buildings'], ['MARKET ●', '/market'],
         ['MILITARY ●', '/military'], ['STATECRAFT ●', '/diplomacy'],
         ['🛠 CRAFTABLES ●', '/craftables'],
+        ['⚰ NECROMANCY ●', '/necromancy'],
         ['LEDGER', '/ledger'], // no ● on purpose — see the scanner tests
       ],
       '/expeditions': [
@@ -78,6 +82,60 @@
       '/heroes': [['SPELLBOOK ●', '/spellbook']],
     };
 
+    // --- the Rites of Remembrance panel ---------------------------------
+    // Reconstructed from a capture of the live panel (2026-07-01). The
+    // extension's whole model of this screen is inferred from that text, so
+    // the fixture reproduces the WORDING exactly and invents only the shape
+    // — which is precisely what tools/harvest-necromancy.js exists to check
+    // against reality. Class names stay opaque, like everything else here.
+    const rites = { souls: 4120, disturbance: 12, tolerance: 50, harvestYield: 240 };
+
+    function renderRites() {
+      const panel = document.getElementById('panel');
+      panel.textContent = '';
+      const n = (v) => v.toLocaleString('en-US');
+      // Rebuilt wholesale on every rite, the way an SPA re-renders — which is
+      // what makes stale element references a real hazard worth testing.
+      panel.innerHTML = `
+        <section class="q7">
+          <h2>[ RITES OF REMEMBRANCE ]</h2>
+          <p class="q8">⚰️ WAR CEMETERY</p>
+          <p class="q9">💀 ${n(rites.souls)} souls · Disturbance ${rites.disturbance}/${rites.tolerance}</p>
+          <div class="qa">
+            <div class="qb" data-rite="host">
+              <h3>👻 Spectral Host · +6 disturb</h3>
+              <p>Bind the dead into a ghostly war-party that marches with your next raid.</p>
+              <input type="number" value="100" aria-label="Ghosts to raise" />
+              <button type="button">PERFORM</button>
+            </div>
+            <div class="qb" data-rite="harvest">
+              <h3>💀 Soul-Harvest · +4 disturb</h3>
+              <p>Call the restless dead to give up their souls. They do not give them gladly.</p>
+              <button type="button">PERFORM · +${n(rites.harvestYield)} SOULS</button>
+            </div>
+          </div>
+        </section>`;
+
+      panel.querySelector('[data-rite="harvest"] button').addEventListener('click', () => {
+        rites.souls += rites.harvestYield;
+        rites.disturbance += 4;
+        document.getElementById('log').textContent = 'rite:harvest';
+        renderRites();
+      });
+      panel.querySelector('[data-rite="host"] button').addEventListener('click', () => {
+        const input = panel.querySelector('[data-rite="host"] input');
+        const want = Number(input.value) || 0;
+        if (want > rites.souls) {
+          document.getElementById('log').textContent = 'rite:host-refused';
+          return;
+        }
+        rites.souls -= want;
+        rites.disturbance += 6;
+        document.getElementById('log').textContent = 'rite:host:' + want;
+        renderRites();
+      });
+    }
+
     // Stand in for the SPA router: record clicks instead of navigating, so the
     // test can assert which element the palette actually activated.
     document.addEventListener('click', (e) => {
@@ -86,6 +144,10 @@
       e.preventDefault();
       const href = a.getAttribute('href');
       document.getElementById('log').textContent = 'navigated:' + href;
+
+      // The rites live on their own page, so leaving it takes the panel away.
+      if (href === '/necromancy') renderRites();
+      else document.getElementById('panel').textContent = '';
 
       const rows = SUBNAV[href];
       const nav = document.querySelector('nav.c3d4');

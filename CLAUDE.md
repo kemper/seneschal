@@ -1,8 +1,9 @@
 # Seneschal — working notes for agents
 
-A Chrome extension (Manifest V3) that adds a Cmd-K command palette to
-[wardenfall.com](https://wardenfall.com), a browser strategy game. The palette
-is v0.1; a companion dashboard is the eventual goal.
+A Chrome extension (Manifest V3) for [wardenfall.com](https://wardenfall.com),
+a browser strategy game: a Cmd-K command palette, a configurable floating quick
+menu, and — as of v0.3 — one action that performs a game rite rather than
+merely navigating. A companion dashboard is the eventual goal.
 
 This repo is **secret-free by design**. Do not add credentials, cookies,
 encrypted secret files, or keys — none are needed. A content script runs inside
@@ -67,10 +68,32 @@ coupling away, the failure is made LOUD: walk the door, wait `RESOLVE_MS`, and
 if the entry never appears, warn on screen and in the console naming the
 pattern. `test/dock.py` holds that line. Don't "fix" it into a silent no-op.
 
+**10. One feature SPENDS resources, and it is built to fail closed.** "Raise
+host" clicks a rite that consumes souls and can sacrifice living veterans — the
+only irreversible thing in the extension. Its vocabulary comes from a page-text
+capture (2026-07-01, when the rites still lived on `/expeditions`) and its
+*structure* is a guess, so `src/necro.js` never acts on a number it has not
+read. It refuses when a rite's size cannot be determined; refuses when walking
+up from a label to a button lands on a container naming a **different** rite
+(one hop too far is how you sacrifice veterans while trying to raise ghosts);
+verifies the size field actually took the value before performing, because a
+plain `value` write on a React-controlled input updates the pixels and not the
+state; and halts the harvest loop the first time a click fails to move the
+balance. **Do not collapse any of those into a happy path.**
+`tools/harvest-necromancy.js` turns the guess into a measurement — it reads
+only, and should be run before the inferred locators are trusted.
+
+**11. A `transform` makes an element the containing block for its
+`position: fixed` descendants.** `.dk-wrap` is transformed to centre itself
+vertically, so the confirmation scrim nested inside it was not full-screen at
+all — it was confined to the rail's own box, rendering a 420px dialog as a
+160px column crushed against the edge. The suite was green; the screenshot was
+not. The scrim now lives outside `.dk-wrap`. Keep it there.
+
 ## Working agreements
 
 - **Verify in a browser; do not trust reading.** Every bug so far was caught by
-  the Playwright suite and none would have survived review: an author
+  the Playwright suite (or a screenshot) and none would have survived review: an author
   `display: flex` overriding the `hidden` attribute (the palette never closed);
   a backtick inside a CSS comment terminating the JS template literal holding
   the whole stylesheet; a harvester that abandoned you on whatever page its walk
@@ -90,12 +113,14 @@ pattern. `test/dock.py` holds that line. Don't "fix" it into a silent no-op.
 node --test test/fuzzy.test.mjs     # 12
 node --test test/learned.test.mjs   # 11
 node --test test/config.test.mjs    # 26
+node --test test/pending.test.mjs   # 11
+node --test test/necro.test.mjs     # 28
 python3 test/e2e.py                 # 26
-python3 test/dock.py                # 40
+python3 test/dock.py                # 74
 python3 test/harvest.py             # 15
 ```
 
-130 checks. Keep them passing.
+203 checks. Keep them passing.
 
 `test/dock.py` drives the options page and the toolbar popup as real
 extension pages (get the id from `ctx.service_workers[0].url`), which is also
@@ -113,6 +138,18 @@ Never run `playwright install`. Launch with `--no-sandbox
 --disable-setuid-sandbox --disable-quic --no-proxy-server`.
 
 ## Open work, in priority order
+
+**1a. Measure the rites panel — the highest-value ask, because it is the one
+place a wrong guess spends something.** `src/necro.js` locates the Spectral
+Host and Soul-Harvest rites from a July-1 page-text capture and an *inferred*
+DOM shape. Ask the user to open the rites panel (REALM › NECROMANCY), paste
+`tools/harvest-necromancy.js` into DevTools, and hand back the JSON. It reads
+only. Anything it reports as `MISSING` or `AMBIGUOUS` is precisely what the
+extension will refuse on. Two specific questions it answers: does Spectral Host
+have a **number field** (if not, the size must come from the button text, and
+if that does not state a cost the feature refuses outright), and does React
+install its own `value` setter (which decides whether the native-setter write
+is doing real work).
 
 **1. Harvest the real destination list.** `src/catalog.js` was written from
 captured page text without live-site access, and it shows: **11 of its 23 entries
