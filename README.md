@@ -211,8 +211,14 @@ offered as something to sacrifice towards, and the sheet shows both numbers so
 The size lives on the entry, so the ⚙ editor can change it, and you can keep
 several at different sizes. Default 10,000.
 
-The rail shows your last soul reading as a badge. There is no API for it, and
-the number only renders on the rites panel, so it is a **cache** — the tooltip
+The rail shows the last reading as a badge — `3💀 285k👻`, souls and raisable
+dead. Both, because neither alone tells you what you can raise: souls are the
+catalyst and the fallen are the pool, and no amount of sacrificing turns one
+into the other. The rite sits **outside** the scrolling link list for this
+reason; a number you have to scroll to find is a number you will not look at.
+
+There is no API for it, and the
+number only renders on the rites panel, so it is a **cache** — the tooltip
 gives its age and the badge greys out after an hour. It refreshes whenever the
 panel is on screen, and immediately after a rite.
 
@@ -377,13 +383,13 @@ node --test test/learned.test.mjs   # 11 retention-policy unit tests
 node --test test/config.test.mjs    # 43 settings-model unit tests
 node --test test/heroes.test.mjs    # 14 hero, siege and heal-all parsers
 node --test test/pending.test.mjs   # 11 pending-state unit tests
-node --test test/necro.test.mjs     # 42 rites parsing / planning unit tests
+node --test test/necro.test.mjs     # 44 rites parsing / planning unit tests
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 111 checks, quick menu + hero panel + rites
+python3 test/dock.py                # 114 checks, quick menu + hero panel + rites
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 285 pass. The Python tests need Playwright; `test/chromium_path.py` locates
+All 290 pass. The Python tests need Playwright; `test/chromium_path.py` locates
 a Chromium on either Linux or macOS, overridable with `SENESCHAL_CHROMIUM`.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the

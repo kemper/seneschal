@@ -74,7 +74,11 @@
   scrollbar-width: thin;
   scrollbar-color: #39424f transparent;
 }
-.dk-sep, .dk-tools { flex: 0 0 auto; }
+/* The rites sit OUTSIDE the scroller and never shrink, for the same reason the
+   heal buttons do not: this row carries the soul and raisable-dead reading, and
+   a number you have to scroll to find is a number you will not look at. */
+.dk-sep, .dk-tools, .dk-rites { flex: 0 0 auto; }
+.dk-rites { display: flex; flex-direction: column; gap: 2px; }
 .dk-right .dk-rail { border-right: 0; border-radius: 10px 0 0 10px; }
 .dk-left  .dk-rail { border-left: 0;  border-radius: 0 10px 10px 0; }
 

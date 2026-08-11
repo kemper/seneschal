@@ -108,7 +108,8 @@
     { id: "seed-market", icon: "🪙", label: "Market", type: "url", path: "/market" },
     { id: "seed-holds", icon: "🚩", label: "Holds", type: "url", path: "/holds" },
     { id: "seed-stable", icon: "🐎", label: "Stable", type: "url", path: "/stable" },
-    { id: "seed-rankings", icon: "🏆", label: "Rankings", type: "url", path: "/rankings" },
+    // Not a link: this is the rite, and it is what carries the soul / raisable
+    // dead badge on the rail. Kept last so the links above read as one list.
     { id: "seed-host", icon: "👻", label: "Raise host", type: "host", souls: SOULS_DEFAULT, match: RITES_MATCH, door: RITES_DOOR },
   ];
 
@@ -197,6 +198,23 @@
       { id: "seed-holds", icon: "🚩", label: "Holds", type: "url", path: "/holds" },
       { id: "seed-stable", icon: "🐎", label: "Stable", type: "url", path: "/stable" },
       { id: "seed-rankings", icon: "🏆", label: "Rankings", type: "url", path: "/rankings" },
+    ],
+    // The same twelve with the rite appended — the first menu to carry it, and
+    // the one Rankings was then dropped from at the user's request.
+    [
+      { id: "seed-realm", icon: "🏰", label: "Realm", type: "url", path: "/empire" },
+      { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
+      { id: "seed-raids", icon: "🏴", label: "Raids", type: "url", path: "/expeditions" },
+      { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "url", path: "/conquest" },
+      { id: "seed-arena", icon: "⚔️", label: "Arena", type: "url", path: "/arena" },
+      { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+      { id: "seed-spellbook", icon: "🔮", label: "Spellbook", type: "url", path: "/spellbook" },
+      { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
+      { id: "seed-market", icon: "🪙", label: "Market", type: "url", path: "/market" },
+      { id: "seed-holds", icon: "🚩", label: "Holds", type: "url", path: "/holds" },
+      { id: "seed-stable", icon: "🐎", label: "Stable", type: "url", path: "/stable" },
+      { id: "seed-rankings", icon: "🏆", label: "Rankings", type: "url", path: "/rankings" },
+      { id: "seed-host", icon: "👻", label: "Raise host", type: "host", souls: SOULS_DEFAULT, match: RITES_MATCH, door: RITES_DOOR },
     ],
   ];
 

@@ -320,8 +320,7 @@ test("the default menu is the requested one, in the requested order", () => {
   assert.deepEqual(
     [...labels],
     ["Realm", "Champions", "Raids", "Sieges", "Arena", "Craftables",
-     "Spellbook", "Military", "Market", "Holds", "Stable", "Rankings",
-     "Raise host"]
+     "Spellbook", "Military", "Market", "Holds", "Stable", "Raise host"]
   );
 });
 
@@ -337,7 +336,7 @@ test("an untouched shipped menu is brought up to the current default", () => {
     { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
   ];
   const { config } = CFG.normalize({ dock: { items: oldMenu } });
-  assert.equal(config.dock.items.length, 13);
+  assert.equal(config.dock.items.length, 12);
   assert.equal(config.dock.items[0].label, "Realm");
 });
 
@@ -353,7 +352,7 @@ test("the very first shipped menu is recognised too", () => {
     { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "menu", match: "hunt", door: "/expeditions" },
   ];
   assert.equal(CFG.isShippedMenu(v01), true);
-  assert.equal(CFG.normalize({ dock: { items: v01 } }).config.dock.items.length, 13);
+  assert.equal(CFG.normalize({ dock: { items: v01 } }).config.dock.items.length, 12);
 });
 
 test("a menu with one entry added is the user's, and is left alone", () => {
@@ -362,8 +361,8 @@ test("a menu with one entry added is the user's, and is left alone", () => {
     { id: "it-mine", icon: "★", label: "My page", type: "url", path: "/delve" },
   ];
   const { config } = CFG.normalize({ dock: { items: mine } });
-  assert.equal(config.dock.items.length, 14);
-  assert.equal(config.dock.items[13].label, "My page");
+  assert.equal(config.dock.items.length, 13);
+  assert.equal(config.dock.items[12].label, "My page");
 });
 
 test("a menu with one entry REMOVED is the user's", () => {
@@ -403,7 +402,7 @@ test("every default path is one the catalog harvested", () => {
   const harvested = new Set([
     "/empire", "/heroes", "/expeditions", "/conquest", "/arena",
     "/expeditions/buildings/craftables", "/spellbook", "/military",
-    "/market", "/holds", "/stable", "/rankings",
+    "/market", "/holds", "/stable",
     // The rites. NOT in the Realm row and not guessable from the label: the
     // harvest puts "⚰ Necromancy" in the CHAMPIONS row, three levels deep.
     "/expeditions/buildings/necromancy",
@@ -433,7 +432,7 @@ test("a shipped menu that was already REPAIRED is still recognised", () => {
     { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "url", path: "/hunt" },
   ];
   assert.equal(CFG.isShippedMenu(repaired), true);
-  assert.equal(CFG.normalize({ dock: { items: repaired } }).config.dock.items.length, 13);
+  assert.equal(CFG.normalize({ dock: { items: repaired } }).config.dock.items.length, 12);
 });
 
 test("the second shipped menu survives repair-then-write too", () => {

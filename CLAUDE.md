@@ -214,6 +214,15 @@ see), `.dk-heroes` shrinks only after that, and `.dk-sep`/`.dk-tools` never
 shrink. `min-height: 0` is what permits any of it. `test/dock.py` pins this at
 a 720px viewport.
 
+**21b. Anything that DISPLAYS A READING must live outside `.dk-items`.** The
+corollary of 21, and it bit immediately: the "Raise host" rite carries the soul
+and raisable-dead badge, it was the last entry in the menu, and `.dk-items` is
+by design the first thing to surrender space — so the one number the user asked
+to see was the one guaranteed to scroll out of sight. Rites now render in
+`.dk-rites`, a `flex: 0 0 auto` block between the scroller and the hero panel.
+Caught by a screenshot with a green suite, again. A row you have to scroll to
+find is a row you will not look at.
+
 **22. One feature SPENDS resources, and it is built to fail closed.** "Raise
 host" clicks a rite that consumes souls and can sacrifice living veterans — the
 only irreversible thing in the extension. Its vocabulary comes from a page-text
@@ -298,13 +307,13 @@ node --test test/learned.test.mjs   # 11
 node --test test/config.test.mjs    # 43
 node --test test/heroes.test.mjs    # 14
 node --test test/pending.test.mjs   # 11
-node --test test/necro.test.mjs     # 42
+node --test test/necro.test.mjs     # 44
 python3 test/e2e.py                 # 26
-python3 test/dock.py                # 111
+python3 test/dock.py                # 114
 python3 test/harvest.py             # 15
 ```
 
-285 checks. Keep them passing.
+290 checks. Keep them passing.
 
 The Python tests need Playwright. There is a local `.venv` (gitignored):
 `.venv/bin/python3 test/dock.py`. `test/chromium_path.py` finds a Chromium

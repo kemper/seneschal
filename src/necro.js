@@ -166,7 +166,8 @@
    * that; the boundary has to survive the read. Getting this wrong is silent,
    * and it disarms the one warning guarding an irreversible spend.
    *
-   * @returns {{souls:number, disturbance:number|null, tolerance:number|null}|null}
+   * @returns {{souls:number, dead:number|null, disturbance:number|null,
+   *   tolerance:number|null}|null}
    */
   function parseBalance(text) {
     const s = String(text == null ? "" : text);
@@ -182,6 +183,10 @@
     ).exec(s);
     return {
       souls: count,
+      // The pool a host is actually raised FROM. Carried on the same reading
+      // because the two numbers are only meaningful together — souls alone
+      // will happily describe a host the fallen cannot fill.
+      dead: parseRaisableDead(s),
       disturbance: disturb ? toInt(disturb[1]) : null,
       tolerance: disturb ? toInt(disturb[2]) : null,
     };

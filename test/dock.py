@@ -80,8 +80,7 @@ DOCK = "document.getElementById('seneschal-dock').shadowRoot"
 # depend on it: what a fresh install shows, and what clearing storage restores.
 DEFAULT_MENU = [
     "Realm", "Champions", "Raids", "Sieges", "Arena", "Craftables",
-    "Spellbook", "Military", "Market", "Holds", "Stable", "Rankings",
-    "Raise host",
+    "Spellbook", "Military", "Market", "Holds", "Stable", "Raise host",
 ]
 
 
@@ -571,8 +570,10 @@ async def main() -> int:
         # 1,000 ghosts at 1 soul per 1,000 is ONE soul, not a thousand.
         check(await souls_on_page() == "2",
               "the balance moved by exactly what was approved", await souls_on_page())
-        check(await badge("host-small") == "2",
-              "the rail picks the new balance up", str(await badge("host-small")))
+        # Both currencies on the badge: 2 souls, and the pool one raise lighter
+        # (284,745 - 1). Souls alone would not tell you what you can raise.
+        check(await badge("host-small") == "2💀 285k👻",
+              "the rail shows the new balance and the pool", str(await badge("host-small")))
 
         # --- the destructive case: short, and sacrifice would cover it -------
         # 4,500 ghosts is 5 blocks, so 5 souls. Two are held, so it is 3 short:
@@ -840,12 +841,18 @@ async def main() -> int:
                 const list = {DOCK}.querySelector('.dk-items');
                 const tools = {DOCK}.querySelector('.dk-tools');
                 const heroes = {DOCK}.querySelector('.dk-heroes');
+                const rites = {DOCK}.querySelector('.dk-rites');
                 const r = rail.getBoundingClientRect();
+                const rr = rites && rites.getBoundingClientRect();
                 return {{
                     listScrolls: list.scrollHeight > list.clientHeight + 1,
                     railScrolls: rail.scrollHeight > rail.clientHeight + 1,
                     toolsInside: tools.getBoundingClientRect().bottom <= r.bottom + 1,
                     heroesInside: heroes.getBoundingClientRect().top >= r.top - 1,
+                    ritesPresent: Boolean(rites),
+                    ritesVisible: Boolean(rr && rr.top >= r.top - 1 && rr.bottom <= r.bottom + 1
+                                          && rr.top >= 0 && rr.bottom <= innerHeight),
+                    ritesOutsideScroller: Boolean(rites && !list.contains(rites)),
                     onScreen: r.top >= 0 && r.bottom <= innerHeight,
                 }};
             }}"""
@@ -855,6 +862,12 @@ async def main() -> int:
         check(fit["toolsInside"], "add and settings stay reachable on a short screen", str(fit))
         check(fit["heroesInside"], "the hero panel stays on the rail", str(fit))
         check(fit["onScreen"], "the rail fits the viewport", str(fit))
+        # The rite carries the soul / raisable-dead reading. In the scroller it
+        # was the LAST row, so it was always the one that scrolled out of sight
+        # — visible in a screenshot, invisible to a green suite.
+        check(fit["ritesPresent"], "the rite renders on the rail", str(fit))
+        check(fit["ritesOutsideScroller"], "the rite is not in the part that scrolls", str(fit))
+        check(fit["ritesVisible"], "so its balance badge is on screen at 720px", str(fit))
 
         # --- asking happens in our own panel, never in a native dialog --------
         # Clicking a heal method must ask first. Cancelling it must spend

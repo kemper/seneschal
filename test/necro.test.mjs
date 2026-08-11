@@ -191,6 +191,26 @@ test("reads the raisable dead pool", () => {
   assert.equal(N.parseRaisableDead("💀 0 souls (catalyst — from veteran sacrifice)"), null);
 });
 
+test("a balance carries the pool alongside the souls", () => {
+  // The rail shows both, and plan() needs both — souls alone will happily
+  // describe a host the fallen cannot fill.
+  const got = N.parseBalance(
+    "💀 30 souls (catalyst — from veteran sacrifice)\n" +
+      "👻 221,557 raisable dead (your fallen)\nDisturbance 10/65\n60 scouts lost"
+  );
+  assert.equal(got.souls, 30);
+  assert.equal(got.dead, 221557);
+  assert.equal(got.tolerance, 65);
+});
+
+test("a panel with no pool on it still yields a reading", () => {
+  // Older wording, and any future redesign that drops the line. The pool is
+  // null rather than zero, so the rail omits it instead of claiming none.
+  const got = N.parseBalance("💀 4,120 souls · Disturbance 12/50");
+  assert.equal(got.souls, 4120);
+  assert.equal(got.dead, null);
+});
+
 // --- planning ----------------------------------------------------------------
 
 test("no rate means no plan — the refusal that outranks every other branch", () => {

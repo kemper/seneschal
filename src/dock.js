@@ -329,7 +329,14 @@
       // fold. Now the link list gives up its space first and the panel stays put.
       const list = document.createElement("div");
       list.className = "dk-items";
+      // Rites do NOT go in the scroller. They carry the soul / raisable-dead
+      // badge, and the scroller is by design the first thing to surrender
+      // space — so a rite in here is exactly the row that scrolls out of sight
+      // on a laptop, taking the reading with it. A screenshot caught this; the
+      // suite was green, because scrolled-away is not missing.
+      const rites = items.filter((it) => it.type === "host");
       for (const item of items) {
+        if (item.type === "host") continue;
         list.appendChild(this._itemButton(item));
       }
       if (!items.length) {
@@ -342,6 +349,13 @@
         list.appendChild(empty);
       }
       this.rail.appendChild(list);
+
+      if (rites.length) {
+        const box = document.createElement("div");
+        box.className = "dk-rites";
+        for (const item of rites) box.appendChild(this._itemButton(item));
+        this.rail.appendChild(box);
+      }
 
       if (this.settings.heroes?.enabled) this.rail.appendChild(this._heroSection());
 
@@ -757,7 +771,12 @@
       const size = SEN.config.clampSouls(item.souls);
       const base = `${item.label} — raise a spectral host of ${SEN.necro.formatCount(size)}`;
       if (!this.souls) return `${base}\nSoul balance not read yet`;
-      return `${base}\n${SEN.necro.formatCount(this.souls.souls)} souls, read ${SEN.necro.formatAge(this.souls.at)}`;
+      const n = SEN.necro;
+      const pool =
+        this.souls.dead == null
+          ? ""
+          : `, ${n.formatCount(this.souls.dead)} raisable dead`;
+      return `${base}\n${n.formatCount(this.souls.souls)} souls${pool}, read ${n.formatAge(this.souls.at)}`;
     }
 
     /**
@@ -765,13 +784,31 @@
      * because the balance updates on a poll and re-rendering the whole rail
      * four times a minute would fight with the pending spinner.
      */
+    /**
+     * The rail badge: souls and raisable dead, short-form.
+     *
+     * An em dash for "nothing read yet" rather than a zero — zero souls is a
+     * real and actionable state, and showing it before we have looked would be
+     * a lie about a number that gates a spend.
+     */
+    _soulsBadge() {
+      if (!this.souls) return "—";
+      const n = SEN.necro;
+      const souls = `${n.formatShort(this.souls.souls)}💀`;
+      if (this.souls.dead == null) return souls;
+      return `${souls} ${n.formatShort(this.souls.dead)}👻`;
+    }
+
     _paintSouls() {
       if (!this.rail) return;
       const fresh = this.souls && Date.now() - (this.souls.at || 0) < SOULS_FRESH_MS;
       for (const btn of this.rail.querySelectorAll('.dk-btn[data-type="host"]')) {
         const badge = btn.querySelector('[data-role="souls"]');
         if (!badge) continue;
-        badge.textContent = this.souls ? SEN.necro.formatShort(this.souls.souls) : "—";
+        // Both currencies, because neither one alone tells you what you can
+        // raise: souls are the catalyst, the fallen are the pool, and no
+        // amount of sacrificing turns one into the other.
+        badge.textContent = this._soulsBadge();
         badge.classList.toggle("dk-stale", !fresh);
         const item = this.settings.dock.items.find((it) => it.id === btn.dataset.id);
         if (item) btn.title = this._itemTitle(item);
@@ -803,6 +840,7 @@
       const same =
         this.souls &&
         this.souls.souls === next.souls &&
+        this.souls.dead === next.dead &&
         this.souls.disturbance === next.disturbance;
       this.souls = next;
       this._paintSouls();
@@ -1090,7 +1128,7 @@
           );
           return;
         }
-        const deadHave = SEN.necro.parseRaisableDead(SEN.necro.blockText(document.body));
+        const deadHave = reading.dead;
 
         const harvest = SEN.necro.findRiteCard("harvest");
         const harvestButton = harvest ? SEN.necro.performButton(harvest) : null;
