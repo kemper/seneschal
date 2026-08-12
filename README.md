@@ -228,7 +228,7 @@ to find is a number you will not look at.
 There is no API for it, and the
 number only renders on the rites panel, so it is a **cache** — the tooltip
 gives its age and the badge greys out after an hour. It refreshes whenever the
-panel is on screen, and immediately after a rite.
+panel is on screen, immediately after a rite, and whenever you press ↻.
 
 **What it refuses to do**, all of which are the same rule — never act on a
 number it has not read:
@@ -344,6 +344,25 @@ so loudly if it did not, rather than reporting success because a click didn't
 throw. When more than one siege is active, a small control picks which one the
 heals draw from.
 
+## The ↻ button
+
+Everything the rail displays is a **reading**, and each one lands on its own
+schedule: the roster refreshes when you navigate, the soul balance only while
+you happen to be standing on the rites panel. So "are these numbers still true?"
+had no answer short of reloading the game.
+
+↻ answers it. It re-reads the roster, the soul balance and the standing host in
+one press — all of it in the background, none of it moving you off the page you
+are on — and then **says what it read**: `Refreshed · 5 heroes, 2 wounded ·
+7,500 in the host · 42 souls · 777 raisable`. Naming the numbers is the point;
+"done" would leave you exactly where you started. A source that does not answer
+is named too, so a stale figure is never passed off as a fresh one.
+
+It lives in its own narrow column beside the rail rather than in the menu,
+because it acts on what the rail displays instead of taking you anywhere. While
+it works it swaps its glyph for a spinner and goes amber — it does **not** grey
+itself out, because a dimmed control reads as one you cannot use.
+
 ## Refreshing the destination list
 
 `src/catalog.js` was harvested from the live site on 2026-08-08 and verified
@@ -393,7 +412,7 @@ node --test test/heroes.test.mjs    # 14 hero, siege and heal-all parsers
 node --test test/pending.test.mjs   # 11 pending-state unit tests
 node --test test/necro.test.mjs     # 47 rites parsing / planning unit tests
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 127 checks, quick menu + hero panel + rites
+python3 test/dock.py                # 145 checks, quick menu + hero panel + rites
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 

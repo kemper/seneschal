@@ -43,6 +43,9 @@
   // How many messages can be on screen at once. Healing a full roster posts one
   // per hero; past this the oldest goes, so a burst cannot march off screen.
   const MAX_TOASTS = 6;
+  // Stashed rather than inlined: the button swaps its glyph for a spinner while
+  // it works, so the thing to put back afterwards needs one home.
+  const REFRESH_GLYPH = "↻";
 
   // The soul balance is rendered only on the rites panel and no API exposes
   // it, so the rail shows the LAST READING rather than a live number. Kept
@@ -119,6 +122,7 @@
       this.souls = null; // last balance reading: {souls, disturbance, tolerance, at}
       this.soulsTimer = null;
       this.running = false; // a rite is mid-flight; the rail is inert
+      this.reloading = false; // a manual refresh is in flight
       this._build();
     }
 
@@ -197,6 +201,8 @@
       // Child order matters: the rail is LAST so it stays flush against the
       // screen edge, with the tab beside it and the form opening inward. Put
       // the form first and it no longer shoves the rail sideways when it opens.
+      // The tools column goes just INSIDE the tab, so the tab keeps butting up
+      // against the rail it opens and closes — the two read as one control.
       this.wrap.innerHTML = `
         <div class="dk-ask" hidden role="alertdialog" aria-modal="true" aria-labelledby="dk-ask-title">
           <h2 id="dk-ask-title"></h2>
@@ -244,6 +250,7 @@
             <button type="button" class="dk-primary dk-save">Add</button>
           </div>
         </div>
+        <div class="dk-side" role="toolbar" aria-label="Seneschal tools"></div>
         <button type="button" class="dk-tab" title="Collapse or expand the quick menu"></button>
         <div class="dk-rail" role="navigation" aria-label="Seneschal quick menu"></div>`;
 
@@ -279,6 +286,7 @@
 
       this.rail = this.wrap.querySelector(".dk-rail");
       this.tab = this.wrap.querySelector(".dk-tab");
+      this.side = this.wrap.querySelector(".dk-side");
       this.form = this.wrap.querySelector(".dk-form");
       this.errorEl = this.wrap.querySelector(".dk-error");
       this.typeSelect = this.wrap.querySelector("#dk-type");
@@ -298,6 +306,17 @@
         this._closeAsk(e.key === "Enter");
       });
       this.sheet = this.scrim.querySelector(".dk-sheet");
+
+      // Built ONCE, and deliberately outside .dk-rail: render() rebuilds the
+      // rail wholesale, and a refresh button that is replaced halfway through a
+      // refresh loses the spinner that is the whole point of pressing it.
+      this.refreshBtn = this._toolButton(
+        REFRESH_GLYPH,
+        "Refresh — re-read hero HP, the soul balance and the standing host",
+        () => this._refreshAll()
+      );
+      this.refreshBtn.classList.add("dk-refresh");
+      this.side.appendChild(this.refreshBtn);
 
       this.tab.addEventListener("click", () => this._setCollapsed(!this.settings.dock.collapsed));
       this.typeSelect.addEventListener("change", () => this._syncFormFields());
@@ -554,7 +573,9 @@
      * blanks the panel.
      */
     async _refreshHeroes() {
-      if (this.refreshing) return;
+      // null rather than false: "one is already running" is not a failure, and
+      // the refresh button has to be able to tell those apart before it reports.
+      if (this.refreshing) return null;
       this.refreshing = true;
       this._paintRefreshing();
       try {
@@ -578,6 +599,7 @@
         });
         this.refreshing = false;
         this.render();
+        return true;
       } catch (e) {
         // A request killed by navigating away is routine, not a fault: every
         // in-game click is a full page load, so a refresh started moments
@@ -597,6 +619,7 @@
         } else {
           this._paintRefreshing();
         }
+        return false;
       }
     }
 
@@ -959,12 +982,142 @@
      * rather than a wrong number.
      */
     async _refreshRites() {
-      const host = await SEN.necro.loadGhostHost();
+      const [host, balance] = await Promise.all([SEN.necro.loadGhostHost(), this._readBalance()]);
+      // Neither source answered. Say nothing and change nothing: the badge
+      // greys itself once the reading is stale, which is the honest display.
+      if (!host && !balance) return false;
+      const next = { ...(this.souls || { souls: 0 }), ...(balance || {}), at: Date.now() };
+      // Only overwrite the host when it was actually read. It has one source
+      // and that source is an internal, so a failed read must leave the last
+      // known figure standing rather than replacing it with a zero.
       if (host) {
-        this.souls = { ...(this.souls || { souls: 0 }), host: host.size, armed: host.armed, at: Date.now() };
-        this._paintSouls();
-        await store.set(SOULS_KEY, this.souls);
+        next.host = host.size;
+        next.armed = host.armed;
       }
+      this.souls = next;
+      this._paintSouls();
+      await store.set(SOULS_KEY, this.souls);
+      return true;
+    }
+
+    /**
+     * The soul balance, read off the rites panel in a hidden frame.
+     *
+     * A frame rather than fetch + DOMParser, which is how the rest of the
+     * reading is done: this panel is the one the rite itself is planned from,
+     * and reading it two different ways is how the number in the rail and the
+     * number in the confirmation sheet start disagreeing. Loading a page in a
+     * frame is GETs only (finding 11), so it costs nothing but time.
+     */
+    async _readBalance() {
+      const scope = await this._openRites();
+      if (!scope) return null;
+      try {
+        return SEN.necro.readBalance(scope.doc);
+      } finally {
+        scope.close();
+      }
+    }
+
+    /**
+     * Re-read everything the rail displays, on demand.
+     *
+     * The panel is a cache of readings that each refresh on their own schedule
+     * — the roster on navigation, the balance only while you happen to be
+     * standing on the rites page — so "is this still true?" had no answer short
+     * of reloading the game. This is that answer.
+     */
+    async _refreshAll() {
+      if (this.reloading) return;
+      // A rite is mid-flight and owns a frame; opening a second one to read
+      // numbers it is in the middle of changing would report a torn balance.
+      if (this.running) {
+        this.toast("A rite is in flight — refresh once it has finished.");
+        return;
+      }
+      this.reloading = true;
+      this._paintReloading();
+      const live = this.toast("Refreshing…", { busy: true });
+
+      const wantsHeroes = Boolean(this.settings.heroes?.enabled);
+      // Same rule as the balance poll: a user with no rite on the menu does not
+      // pay for reading one.
+      const wantsRites = this.settings.dock.items.some((it) => it.type === "host");
+      try {
+        const [heroes, rites] = await Promise.all([
+          wantsHeroes ? this._refreshHeroes() : null,
+          wantsRites ? this._refreshRites() : null,
+        ]);
+        live.update(...this._refreshReport({ wantsHeroes, wantsRites, heroes, rites }));
+      } catch (e) {
+        console.warn("[Seneschal] refresh failed:", e);
+        live.update(`Refresh failed: ${(e && e.message) || e}`, true);
+      } finally {
+        this.reloading = false;
+        this._paintReloading();
+      }
+    }
+
+    /**
+     * What the refresh actually managed to read, as [message, isWarning].
+     *
+     * It names the numbers rather than saying "done", because the point of
+     * pressing it is to find out what they are now — and it is explicit about a
+     * source that did not answer, so a stale figure is never passed off as a
+     * fresh one.
+     */
+    _refreshReport({ wantsHeroes, wantsRites, heroes, rites }) {
+      const n = SEN.necro;
+      const got = [];
+      const missed = [];
+
+      if (heroes === true) {
+        const roster = this.heroes || [];
+        const hurt = roster.filter(SEN.heroes.isDamaged).length;
+        got.push(`${roster.length} heroes, ${hurt ? `${hurt} wounded` : "all at full health"}`);
+      } else if (heroes === null && wantsHeroes) {
+        got.push("roster already updating");
+      } else if (heroes === false) {
+        missed.push("the roster");
+      }
+
+      if (rites === true) {
+        const bits = [];
+        if (this.souls && this.souls.host != null) bits.push(`${n.formatCount(this.souls.host)} in the host`);
+        const detail = this._soulsDetail();
+        if (detail) bits.push(detail);
+        got.push(bits.join(" · ") || "the rites");
+      } else if (rites === false) {
+        missed.push("the rites");
+      }
+
+      if (!wantsHeroes && !wantsRites) {
+        return ["Nothing to refresh — the hero panel is off and no rite is on the menu.", false];
+      }
+      if (missed.length) {
+        const read = got.length ? `Read ${got.join(" · ")}. ` : "";
+        return [`${read}Could not read ${missed.join(" or ")}.`, true];
+      }
+      return [`Refreshed · ${got.join(" · ")}`, false];
+    }
+
+    /**
+     * Swap the refresh glyph for a spinner while it works.
+     *
+     * NOT by disabling it: a disabled tool button is drawn dimmed, which is the
+     * same picture as one you cannot use, and that is exactly how the heal
+     * buttons managed to look broken while they were working (finding 27b).
+     * Re-entry is held off by `reloading` instead.
+     */
+    _paintReloading() {
+      const btn = this.refreshBtn;
+      if (!btn) return;
+      btn.classList.toggle("dk-busy", this.reloading);
+      btn.setAttribute("aria-busy", this.reloading ? "true" : "false");
+      const icon = btn.querySelector(".dk-icon");
+      if (!icon) return;
+      icon.classList.toggle("dk-spinner", this.reloading);
+      icon.textContent = this.reloading ? "" : REFRESH_GLYPH;
     }
 
     _recordSouls(reading) {
