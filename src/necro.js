@@ -50,6 +50,9 @@
   // permanent sacrifice, so this is a hard stop, not a retry budget.
   const MAX_HARVESTS = 40;
 
+  // Where the rites live. Harvested, not guessed — see config.RITES_DOOR.
+  const RITES_PATH = "/expeditions/buildings/necromancy";
+
   // The soul bounds live in config.js, which is the single authority on what a
   // valid entry holds (CLAUDE.md); read lazily so load order does not matter.
   const clampSouls = (v, fallback) => SEN.config.clampSouls(v, fallback);
@@ -242,6 +245,34 @@
     if (!per || per <= 0) return null;
     if (dead == null || souls == null) return null;
     return { souls, dead, per };
+  }
+
+  /**
+   * The host you currently have standing.
+   *
+   * READ THIS BEFORE TRUSTING IT. Unlike everything else in this file, the
+   * standing host is **rendered nowhere**. Measured 2026-08-12 across
+   * /conquest, /military, /empire, /expeditions and /heroes: no page prints it.
+   * The only source is the Next.js flight payload embedded in /conquest:
+   *
+   *     \"ghostHost\":{\"armed\":true,\"size\":10000}
+   *
+   * That is an internal, not a label or a URL, so by finding 3 it is the kind
+   * of thing that rots — and it arrives escaped, hence the tolerated
+   * backslashes. It is used anyway because the alternative is not showing the
+   * number at all, but it FAILS TO NULL rather than to zero: a host you cannot
+   * read must never be displayed as "you have none", which is the reading that
+   * would talk someone into raising a second one.
+   *
+   * @returns {{size:number, armed:boolean}|null}
+   */
+  function parseGhostHost(html) {
+    const m = /\\?"ghostHost\\?"\s*:\s*\{([^}]*)\}/.exec(String(html || ""));
+    if (!m) return null;
+    const size = /\\?"size\\?"\s*:\s*([0-9]+)/.exec(m[1]);
+    if (!size) return null;
+    const armed = /\\?"armed\\?"\s*:\s*true/.test(m[1]);
+    return { size: Number(size[1]), armed };
   }
 
   /** The pool a host is raised from: "👻 284,745 raisable dead (your fallen)". */
@@ -565,8 +596,110 @@
     return parseBalance(blockText(body));
   }
 
+  /** Fetch the standing host. One GET, mutates nothing. */
+  async function loadGhostHost() {
+    try {
+      const res = await fetch(SEN.heroes.CONQUEST_PATH, { credentials: "same-origin" });
+      if (!res.ok) return null;
+      return parseGhostHost(await res.text());
+    } catch (e) {
+      // A navigation cancels requests in flight and rejects them; that is
+      // routine, not a fault (CLAUDE.md finding 16).
+      if (!SEN.heroes.isAbort(e)) console.warn("[Seneschal] could not read the host:", e);
+      return null;
+    }
+  }
+
+  /**
+   * Raise a host WITHOUT leaving the page the user is on.
+   *
+   * Same hidden same-origin frame the heals use (finding 11): loading the rites
+   * and setting a field costs GETs only, so everything up to the final click is
+   * free and cannot disturb what is on screen. Walking the user to /necromancy
+   * and abandoning them there was never the point — the point is the rite.
+   *
+   * Everything the caller already approved is passed IN. This function does no
+   * planning and makes no choices: it performs exactly `want`, verifies the
+   * balance moved, and reports. If the frame's own numbers disagree with what
+   * was approved, it refuses rather than performing a different rite.
+   *
+   * @returns {{raised:boolean, want:number, before:number, after:number|null,
+   *   spent:number|null, blocked:string|false}}
+   */
+  async function raiseInFrame({ want, expectSouls, doc: given = null }) {
+    const size = clampSouls(want);
+    // Reuse the caller's frame when it has one — a harvest loop has already
+    // paid for a hydrated document, and opening a second one would act on a
+    // different snapshot of the same panel.
+    const frame = given ? null : SEN.heroes.openFrame(RITES_PATH);
+    try {
+      let doc = given;
+      if (!doc) {
+        await frame.ready;
+        await SEN.heroes.wait(SEN.heroes.SETTLE_MS);
+        doc = frame.el.contentDocument;
+      }
+      if (!doc) throw new Error("could not reach the rites");
+
+      const before = parseBalance(blockText(doc.body));
+      if (!before) throw new Error("no soul balance on the rites page");
+      // The sheet quoted a price against a balance read a moment ago. If the
+      // frame sees a different one, the quote is stale and the click would
+      // spend against numbers the user never saw.
+      if (expectSouls != null && before.souls !== expectSouls) {
+        throw new Error(
+          `the balance changed while you were deciding (${formatCount(expectSouls)} → ${formatCount(before.souls)} souls). Nothing performed.`
+        );
+      }
+
+      const card = findRiteCard("host", doc);
+      if (!card) throw new Error("no Spectral Host rite in the frame");
+      const button = performButton(card);
+      if (!button) throw new Error("no button to perform the rite");
+      if (isBlocked(button)) throw new Error("the game has the Spectral Host button disabled");
+
+      const input = sizeInput(card);
+      if (!input) throw new Error("no size field on the rite");
+      if (!setNumber(input, size)) {
+        throw new Error(`could not set the size to ${formatCount(size)} — it read back as "${input.value}". Nothing performed.`);
+      }
+      await SEN.heroes.wait(SEN.heroes.STEP_MS);
+      if (isBlocked(button)) {
+        throw new Error(`the game refuses a host of ${formatCount(size)} right now. Nothing performed.`);
+      }
+
+      button.click();
+      const after = await SEN.heroes.pollUntil(
+        async () => parseBalance(blockText(doc.body)),
+        (b) => Boolean(b && b.souls !== before.souls)
+      );
+      const raised = Boolean(after && after.souls < before.souls);
+      return {
+        raised,
+        want: size,
+        before: before.souls,
+        after: after ? after.souls : null,
+        spent: raised ? before.souls - after.souls : null,
+        blocked: raised ? false : blockedBy(doc),
+      };
+    } finally {
+      if (frame) frame.close();
+    }
+  }
+
+  /** Anything modal in the frame that would have swallowed the click. */
+  function blockedBy(doc) {
+    const modal = doc && doc.querySelector('[role="dialog"]');
+    if (!modal) return false;
+    return (modal.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) || "a dialog is open";
+  }
+
   SEN.necro = {
     MAX_HARVESTS,
+    RITES_PATH,
+    parseGhostHost,
+    loadGhostHost,
+    raiseInFrame,
     RITE,
     toInt,
     formatCount,

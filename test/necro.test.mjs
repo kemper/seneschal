@@ -467,3 +467,25 @@ test("a fresh install already has the host entry, with nothing to migrate", () =
   assert.equal(fresh.migrated, false);
   assert.equal(fresh.config.dock.items.filter((i) => i.type === "host").length, 1);
 });
+
+// --- the standing host -------------------------------------------------------
+
+test("reads the standing host out of the conquest payload", () => {
+  // Escaped, because it arrives inside a Next.js flight payload rather than as
+  // rendered text — there is no rendered source for this number at all.
+  const html = 'x\\"ghostHost\\":{\\"armed\\":true,\\"size\\":10000},\\"siegeTokens\\":3';
+  assert.deepEqual({ ...N.parseGhostHost(html) }, { size: 10000, armed: true });
+});
+
+test("an unarmed host reads as unarmed, not as absent", () => {
+  const html = '"ghostHost":{"armed":false,"size":0}';
+  assert.deepEqual({ ...N.parseGhostHost(html) }, { size: 0, armed: false });
+});
+
+test("a payload without the host yields NULL, never zero", () => {
+  // The distinction is load-bearing: "you have none" is exactly the reading
+  // that talks someone into raising a second host they did not need.
+  assert.equal(N.parseGhostHost('{"souls":20}'), null);
+  assert.equal(N.parseGhostHost('"ghostHost":{"armed":true}'), null, "no size is no reading");
+  assert.equal(N.parseGhostHost(""), null);
+});

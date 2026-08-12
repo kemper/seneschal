@@ -142,7 +142,7 @@ Entries come in three kinds, and the last two are the interesting ones:
 | --- | --- | --- |
 | **Path** | `/market` | Clicks a live anchor for that path if one is on screen, else navigates. A full `https://` URL opens in a new tab. |
 | **Menu entry** | `craftables`, plus an optional door `/empire` | Clicks the navigation entry whose **visible label** matches. If nothing on this page matches, it goes through the door first, waits for the row to render, and clicks it there. |
-| **Raise host** | `10000` souls | Reaches the rites panel the way a menu entry does, reads the balance, and asks before spending anything. [See below.](#raising-a-spectral-host) |
+| **Raise host** | `10000` souls | Reads the rites in a hidden frame **without moving you off the page**, and asks before spending anything. [See below.](#raising-a-spectral-host) |
 
 The second kind exists because the game's sub-navigation is contextual:
 `CRAFTABLES`, `ARENA` and `🐗 HUNT` are simply **not on the page** unless you
@@ -185,9 +185,9 @@ something. Everything else navigates. This one clicks a rite that consumes
 souls and — when souls are short — sacrifices living veterans to make more.
 Both are irreversible, and that fact shapes the whole design.
 
-Click it and it walks to the rites panel, reads the balance off the page, works
-out what your configured size would actually cost, and shows you that before
-anything is clicked:
+Click it and it loads the rites in a hidden same-origin frame — **you do not
+leave the page you are on** — reads the balance, works out what your configured
+size would actually cost, and shows you that before anything is clicked:
 
 - **Enough souls in hand** — one button, naming the size.
 - **Short** — it counts the sacrifices needed (from the yield the harvest
@@ -211,11 +211,19 @@ offered as something to sacrifice towards, and the sheet shows both numbers so
 The size lives on the entry, so the ⚙ editor can change it, and you can keep
 several at different sizes. Default 10,000.
 
-The rail shows the last reading as a badge — `3💀 285k👻`, souls and raisable
-dead. Both, because neither alone tells you what you can raise: souls are the
-catalyst and the fallen are the pool, and no amount of sacrificing turns one
-into the other. The rite sits **outside** the scrolling link list for this
-reason; a number you have to scroll to find is a number you will not look at.
+The rail leads with the host **you already have standing** — `7.5k⚔` — with what
+a raise would draw on underneath it (`20 souls · 220,238 raisable`). The
+standing host is the number that says whether you need to act at all; the other
+two are what it costs. Souls and the fallen are not interchangeable: souls can
+be harvested, the fallen cannot.
+
+The standing host is **rendered nowhere on the site**. It exists only inside the
+`/conquest` page payload, which is an internal and will therefore rot — so when
+it cannot be read the badge shows the soul balance instead of a zero. "You have
+none" is exactly the reading that would talk you into raising a second host.
+
+The rite sits **outside** the scrolling link list: a number you have to scroll
+to find is a number you will not look at.
 
 There is no API for it, and the
 number only renders on the rites panel, so it is a **cache** — the tooltip
@@ -383,13 +391,13 @@ node --test test/learned.test.mjs   # 11 retention-policy unit tests
 node --test test/config.test.mjs    # 43 settings-model unit tests
 node --test test/heroes.test.mjs    # 14 hero, siege and heal-all parsers
 node --test test/pending.test.mjs   # 11 pending-state unit tests
-node --test test/necro.test.mjs     # 44 rites parsing / planning unit tests
+node --test test/necro.test.mjs     # 47 rites parsing / planning unit tests
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 114 checks, quick menu + hero panel + rites
+python3 test/dock.py                # 127 checks, quick menu + hero panel + rites
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 290 pass. The Python tests need Playwright; `test/chromium_path.py` locates
+All 306 pass. The Python tests need Playwright; `test/chromium_path.py` locates
 a Chromium on either Linux or macOS, overridable with `SENESCHAL_CHROMIUM`.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the

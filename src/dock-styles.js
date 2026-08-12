@@ -349,7 +349,19 @@
 }
 .dk-method:hover:not(:disabled) { border-color: #d9a441; color: #f0b750; }
 .dk-method:disabled { opacity: 0.3; cursor: default; }
-.dk-method.dk-busy { color: #d9a441; border-color: #d9a441; }
+/* BUSY IS NOT DISABLED. A heal takes seconds, and marking it in flight by
+   disabling the button drew it at the same 30% opacity as a method you cannot
+   use — so "working on it" and "unavailable" were the same picture, which is
+   why a heal in progress looked like nothing had happened. Full opacity, amber,
+   and a spinner in place of the glyph. The re-entry guard is the healing map,
+   not the disabled attribute. */
+.dk-method.dk-busy,
+.dk-method.dk-busy:disabled {
+  opacity: 1;
+  color: #d9a441;
+  border-color: #d9a441;
+  cursor: progress;
+}
 
 /* Heal all: the game's own control, mirrored. Reads as an action, and carries
    the game's own price quote underneath rather than one we computed. */
@@ -393,13 +405,34 @@
    itself, and a transformed ancestor becomes the containing block for
    position: fixed descendants — nested inside, this box positioned itself
    against the rail and covered the menu. */
-.dk-toast {
+/* The STACK. Fixed, but positioned from the rail's MEASURED box (see
+   _positionToasts) rather than pinned to a screen corner: a message about the
+   rail belongs beside the rail, where you are already looking. The rail's width
+   is its content's — it changes with the menu, with collapsing, and when the
+   hero panel appears — so CSS alone cannot follow it.
+
+   Newest at the bottom and growing upward, so a message arriving mid-read
+   never shifts the one being read. */
+.dk-toasts {
   position: fixed;
-  bottom: 22px;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: min(360px, 46vw);
   z-index: 2147483001;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-height: 92vh;
+  /* Mostly empty column over the whole viewport height; without this it would
+     swallow clicks meant for the game. Each toast opts back in. */
+  pointer-events: none;
+}
+.dk-toasts.dk-toasts-left { align-items: flex-start; }
+
+.dk-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(360px, 46vw);
   padding: 8px 13px;
   border: 1px solid #2c333f;
   border-radius: 8px;
@@ -410,6 +443,8 @@
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
 }
 .dk-toast[hidden] { display: none; }
+.dk-toast-text { min-width: 0; }
+.dk-toast-spin { flex: none; }
 
 /* Failures are LOUD by design: a pattern that stops matching after a patch has
    to be visible, not a button that quietly does nothing. Warnings are coloured
@@ -437,6 +472,17 @@
   white-space: nowrap;
 }
 .dk-count.dk-stale { color: #6b7686; border-color: #2c333f; }
+
+/* What a raise would draw on, under the rite that spends it. Same shape as the
+   game's own quote under Heal all, but deliberately a different class: they are
+   different numbers from different sources. */
+.dk-rite-quote {
+  padding: 0 10px 4px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: #6b7686;
+}
+.dk-rite-quote[hidden] { display: none; }
 .dk-collapsed .dk-count { display: none; }
 
 /* --- confirmation sheet ---------------------------------------------------

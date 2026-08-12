@@ -52,6 +52,10 @@ def serve(directory: Path) -> tuple[int, socketserver.TCPServer]:
             bare = path.split("?")[0].rstrip("/")
             if bare == "/expeditions/buildings/craftables":
                 return super().translate_path("/craftables.html")
+            # The rites, which the dock now loads in a hidden frame rather than
+            # navigating to. Same document; it renders the panel on load.
+            if bare == "/expeditions/buildings/necromancy":
+                return super().translate_path("/index.html")
             if bare in ("/heroes", "/conquest"):
                 path = bare + ".html"
             return super().translate_path(path)
@@ -308,23 +312,32 @@ async def main() -> int:
         # top of the menu. Assert the geometry, not the markup.
         boxes = await page.evaluate(
             f"""() => {{
-                const r = {DOCK}.querySelector('.dk-rail').getBoundingClientRect();
-                const t = {DOCK}.querySelector('.dk-toast').getBoundingClientRect();
-                return {{ visible: !{DOCK}.querySelector('.dk-toast').hidden,
+                const rail = {DOCK}.querySelector('.dk-rail');
+                const el = {DOCK}.querySelector('.dk-toast');
+                if (!el) return {{ visible: false }};
+                const r = rail.getBoundingClientRect();
+                const t = el.getBoundingClientRect();
+                return {{ visible: true,
                           overlaps: !(t.right < r.left || t.left > r.right ||
                                       t.bottom < r.top || t.top > r.bottom),
-                          below: t.top >= r.bottom }};
+                          beside: t.right <= r.left + 1 || t.left >= r.right - 1,
+                          onScreen: t.left >= 0 && t.right <= innerWidth
+                                    && t.top >= 0 && t.bottom <= innerHeight }};
             }}"""
         )
         check(boxes["visible"], "adding an entry confirms with a toast")
         check(not boxes["overlaps"], "the toast does not cover the menu", str(boxes))
+        # Beside the rail, not in a screen corner: a message about the rail
+        # belongs where you are already looking.
+        check(boxes["beside"], "the toast sits alongside the rail", str(boxes))
+        check(boxes["onScreen"], "and stays fully on screen", str(boxes))
 
         # Poll rather than sleep a fixed span: the hero refresh runs two fetches
         # in the background, and a single timed wait races with them. The point
         # is that a confirmation clears on its own well before a warning's 7s.
         cleared_ms = None
         for elapsed in range(0, 5200, 200):
-            if await page.evaluate(f"() => {DOCK}.querySelector('.dk-toast').hidden"):
+            if await page.evaluate(f"() => !{DOCK}.querySelector('.dk-toast')"):
                 cleared_ms = elapsed
                 break
             await page.wait_for_timeout(200)
@@ -525,97 +538,117 @@ async def main() -> int:
         check(await badge("host-small") == "—",
               "a host entry shows no balance before one has been read", str(await badge("host-small")))
 
-        # Stand where the rites are NOT reachable, so the entry has to walk its
-        # door first — the same journey a `menu` entry makes.
+        # The rites are performed in a HIDDEN FRAME now, so the page the user is
+        # standing on must not change. Everything below stands on /expeditions,
+        # which has no rites on it at all, and stays there.
         await click_entry("Expeditions")
         await page.wait_for_timeout(300)
-        check(await page.evaluate("() => !document.querySelector(\"a[href='/necromancy']\")"),
-              "the rites are genuinely out of reach before the walk")
+        here = await log()
+        check(await souls_on_page() == "", "no rites on the page the user is standing on")
+
+        async def rite_state() -> dict:
+            raw = await page.evaluate("() => localStorage.getItem('fixture.rites')")
+            return json.loads(raw) if raw else {}
 
         await click_entry("Small host")
-        await page.wait_for_timeout(2500)
-        s = await sheet()
-        check(s["open"], "raising a host asks first, and spends nothing yet", str(s))
-        check("Souls=3" in s.get("readings", []),
-              "the sheet shows the balance it actually read off the page", str(s.get("readings")))
-        check("Raisable dead=284,745" in s.get("readings", []),
-              "and the pool of fallen, which souls cannot substitute for", str(s.get("readings")))
-        check("This rite costs=1 soul + 1 dead" in s.get("readings", []),
-              "and the price at the rate the card itself states", str(s.get("readings")))
+        await page.wait_for_timeout(4000)  # frame load + hydration settle
+        s_ = await sheet()
+        check(s_["open"], "raising a host asks first, and spends nothing yet", str(s_))
+        check("Souls=3" in s_.get("readings", []),
+              "the sheet shows the balance it read out of the frame", str(s_.get("readings")))
+        check("Raisable dead=284,745" in s_.get("readings", []),
+              "and the pool of fallen, which souls cannot substitute for", str(s_.get("readings")))
+        check("This rite costs=1 soul + 1 dead" in s_.get("readings", []),
+              "and the price at the rate the card itself states", str(s_.get("readings")))
         # The tolerance is 50 and the line under it starts with "60 scouts".
         # Read through textContent those weld into 5060; this pins the boundary.
-        check("Disturbance=12 / 50" in s.get("readings", []),
-              "and the disturbance it read, tolerance intact", str(s.get("readings")))
-        check("1,000" in s.get("body", ""), "it names the size it is about to raise", s.get("body", ""))
-        check(await log() == "navigated:/necromancy",
-              "it walked the door and opened the rites panel", f"log={await log()!r}")
+        check("Disturbance=12 / 50" in s_.get("readings", []),
+              "and the disturbance it read, tolerance intact", str(s_.get("readings")))
+        check("1,000" in s_.get("body", ""), "it names the size it is about to raise", s_.get("body", ""))
+        # THE POINT of the frame: the user did not go anywhere.
+        check(await log() == here, "reading the rites does not move the user", f"log={await log()!r}")
+        check(
+            await page.evaluate("() => location.pathname") != "/expeditions/buildings/necromancy",
+            "and the tab is still on the page they chose",
+        )
 
         # Escape has to back out of a sheet that is about to spend souls.
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(300)
         check(not (await sheet())["open"], "Escape dismisses the sheet")
-        check(await log() == "navigated:/necromancy", "and nothing was performed", f"log={await log()!r}")
+        check(not (await rite_state()).get("log"), "and nothing was performed", str(await rite_state()))
 
         # --- the plain case: enough souls in hand ----------------------------
         await click_entry("Small host")
-        await page.wait_for_timeout(1500)
-        s = await sheet()
-        check(s["open"], "the sheet opens again, now from the rites page itself", str(s))
-        check(s["actions"] and not any(a["danger"] for a in s["actions"]),
-              "with souls in hand there is nothing destructive to offer", str(s.get("actions")))
-        check(await click_sheet("Raise 1,000"), "the confirm button is there to click", str(s.get("actions")))
-        await page.wait_for_timeout(1500)
-        check(await log() == "rite:host:1000",
-              "confirming performs the rite at the configured size", f"log={await log()!r}")
+        await page.wait_for_timeout(4000)
+        s_ = await sheet()
+        check(s_["open"], "the sheet opens again", str(s_))
+        check(s_["actions"] and not any(a["danger"] for a in s_["actions"]),
+              "with souls in hand there is nothing destructive to offer", str(s_.get("actions")))
+        check(await click_sheet("Raise 1,000"), "the confirm button is there to click", str(s_.get("actions")))
+        await page.wait_for_timeout(9000)  # a second frame, then the verify poll
+        state = await rite_state()
+        check(state.get("log") == ["host:1000"],
+              "confirming performs the rite at the configured size", str(state.get("log")))
         # 1,000 ghosts at 1 soul per 1,000 is ONE soul, not a thousand.
-        check(await souls_on_page() == "2",
-              "the balance moved by exactly what was approved", await souls_on_page())
-        # Both currencies on the badge: 2 souls, and the pool one raise lighter
-        # (284,745 - 1). Souls alone would not tell you what you can raise.
-        check(await badge("host-small") == "2💀 285k👻",
-              "the rail shows the new balance and the pool", str(await badge("host-small")))
+        check(state.get("souls") == 2, "the balance moved by exactly what was approved", str(state))
+        check(state.get("host") == 1000, "and the host is standing", str(state))
+        check(await log() == here, "performing the rite does not move the user either", f"log={await log()!r}")
 
         # --- the destructive case: short, and sacrifice would cover it -------
         # 4,500 ghosts is 5 blocks, so 5 souls. Two are held, so it is 3 short:
         # three harvests at the 1 the button advertises.
         await click_entry("Big host")
-        await page.wait_for_timeout(1500)
-        s = await sheet()
-        check(s["open"], "a shortfall asks first too", str(s))
-        check("3" in s.get("body", "") and "Soul-Harvest 3" in s.get("body", ""),
-              "the sheet counts the sacrifices and names the shortfall", s.get("body", ""))
-        check("living veterans" in s.get("warn", ""),
-              "it says out loud what a sacrifice costs", s.get("warn", ""))
-        check(len([a for a in s["actions"] if a["danger"]]) == 1,
-              "the destructive choice is the one marked as such", str(s["actions"]))
-        check(any("instead" in a["text"] for a in s["actions"]),
-              "the smaller, non-destructive host is offered beside it", str(s["actions"]))
+        await page.wait_for_timeout(4000)
+        s_ = await sheet()
+        check(s_["open"], "a shortfall asks first too", str(s_))
+        check("3" in s_.get("body", "") and "Soul-Harvest 3" in s_.get("body", ""),
+              "the sheet counts the sacrifices and names the shortfall", s_.get("body", ""))
+        check("living veterans" in s_.get("warn", ""),
+              "it says out loud what a sacrifice costs", s_.get("warn", ""))
+        check(len([a for a in s_["actions"] if a["danger"]]) == 1,
+              "the destructive choice is the one marked as such", str(s_["actions"]))
+        check(any("instead" in a["text"] for a in s_["actions"]),
+              "the smaller, non-destructive host is offered beside it", str(s_["actions"]))
 
         check(await click_sheet("Sacrifice"), "the sacrifice button is there to click")
-        await page.wait_for_timeout(7000)
-        check(await log() == "rite:host:4500",
-              "it harvests the shortfall, then raises the full host", f"log={await log()!r}")
+        await page.wait_for_timeout(14000)
+        state = await rite_state()
+        check(state.get("log") == ["host:1000", "harvest", "harvest", "harvest", "host:4500"],
+              "it harvests the shortfall, then raises the full host", str(state.get("log")))
         # 2 + 3 x 1 = 5, less the 5 the 4,500 host costs.
-        check(await souls_on_page() == "0",
-              "the arithmetic across three harvests and a raise holds", await souls_on_page())
-
-        # --- a rites page it cannot reach fails LOUDLY -----------------------
-        # Leave the panel first. Standing ON it, the entry short-circuits and
-        # never hunts at all — correct, but not what is under test here.
-        await click_entry("Expeditions")
-        await page.wait_for_timeout(300)
-        check(await souls_on_page() == "", "the rites panel is off screen again")
-
-        await click_entry("Lost host")
-        await page.wait_for_timeout(7000)  # door walk plus the 6s resolve window
-        toast = await page.evaluate(
-            f"() => {{ const t = {DOCK}.querySelector('.dk-toast');"
-            "  return t.hidden ? '' : t.textContent; }"
+        check(state.get("souls") == 0,
+              "the arithmetic across three harvests and a raise holds", str(state))
+        check(state.get("host") == 5500, "both hosts are standing", str(state))
+        # The STANDING host becomes the badge's headline once it can be read.
+        # It has no rendered source anywhere on the real site — only the
+        # conquest page's flight payload — so this pins that read end to end.
+        await page.wait_for_timeout(1200)
+        check(await badge("host-small") == "7.5k⚔",
+              "the rail leads with the host you already have standing",
+              str(await badge("host-small")))
+        detail = await page.evaluate(
+            f"""() => {{ const d = {DOCK}.querySelector('[data-role="souls-detail"]');
+                        return d && !d.hidden ? d.textContent : null; }}"""
         )
-        check("nosuchrite" in toast,
-              "an unreachable rites page warns, naming the pattern that failed", f"toast={toast!r}")
+        check(detail and "souls" in detail and "raisable" in detail,
+              "with what a raise would draw on underneath it", str(detail))
+
+        # --- a rites page with no balance on it fails LOUDLY -----------------
+        await page.evaluate("() => localStorage.setItem('fixture.norites', '1')")
+        await click_entry("Small host")
+        await page.wait_for_timeout(5000)
+        toast = await page.evaluate(
+            f"() => [...{DOCK}.querySelectorAll('.dk-toast')]"
+            ".map(t => t.textContent).join(' | ')"
+        )
+        check("no soul balance" in toast,
+              "a rites page with no balance says so instead of guessing", f"toast={toast!r}")
         check(not (await sheet())["open"], "no sheet is left open behind the failure")
-        check(await log() != "rite:host:500", "and nothing was performed", f"log={await log()!r}")
+        before_log = (await rite_state()).get("log")
+        check(before_log == ["host:1000", "harvest", "harvest", "harvest", "host:4500"],
+              "and nothing was performed", str(before_log))
+        await page.evaluate("() => localStorage.removeItem('fixture.norites')")
 
         # --- a pattern that matches nothing fails LOUDLY ---------------------
         # This is the failure mode that matters: the game renames a menu entry
@@ -637,12 +670,12 @@ async def main() -> int:
           const root = document.getElementById('seneschal-dock').shadowRoot;
           const b = [...root.querySelectorAll('.dk-btn')].find(x => x.dataset.id === 'ghost');
           const icon = b && b.querySelector('.dk-icon');
-          const t = root.querySelector('.dk-toast');
+          const ts = [...root.querySelectorAll('.dk-toast')];
           return { busy: b && b.getAttribute('data-busy'),
                    aria: b && b.getAttribute('aria-busy'),
                    spinner: !!(icon && icon.classList.contains('dk-spinner')),
                    glyph: icon ? icon.textContent : null,
-                   toast: t.hidden ? '' : t.textContent };
+                   toast: ts.map(t => t.textContent).join(' | ') };
         }"""
 
         # --- the in-flight indicator -----------------------------------------
@@ -658,8 +691,8 @@ async def main() -> int:
 
         await page.wait_for_timeout(7000)  # the resolve window is 6s
         toast = await page.evaluate(
-            f"() => {{ const t = {DOCK}.querySelector('.dk-toast');"
-            "  return t.hidden ? '' : t.textContent; }"
+            f"() => [...{DOCK}.querySelectorAll('.dk-toast')]"
+            ".map(t => t.textContent).join(' | ')"
         )
         check(
             "nosuchthing" in toast,
@@ -913,6 +946,74 @@ async def main() -> int:
             await page.evaluate(f"() => {DOCK}.querySelector('.dk-ask').hidden"),
             "Escape closes the question without spending",
         )
+
+        # --- busy is not disabled --------------------------------------------
+        # A heal takes seconds. Marking it in flight by disabling the button
+        # drew it at the same 30% opacity as a method you cannot use, so
+        # "working on it" and "unavailable" were the same picture — which is
+        # what "I didn't see any processing indicator" actually was.
+        paints = await page.evaluate(
+            f"""() => {{
+                const b = {DOCK}.querySelectorAll('.dk-methods')[0].querySelector('.dk-method');
+                const plain = getComputedStyle(b).opacity;
+                b.disabled = true;
+                const off = getComputedStyle(b).opacity;
+                b.classList.add('dk-busy');
+                const busy = getComputedStyle(b).opacity;
+                const colour = getComputedStyle(b).color;
+                b.classList.remove('dk-busy');
+                b.disabled = false;
+                return {{ plain, off, busy, colour }};
+            }}"""
+        )
+        check(float(paints["off"]) < 0.5, "an unusable method is drawn faded", str(paints))
+        check(float(paints["busy"]) > 0.9, "a method mid-heal is NOT drawn faded", str(paints))
+        check(paints["busy"] != paints["off"], "in flight and unavailable look different", str(paints))
+
+        # --- several messages at once ------------------------------------------
+        # One slot meant each result wiped the last, so healing five heroes
+        # showed one line. Raise a warning (7s) and a confirmation together.
+        # Two adds inside the 2.6s confirmation window: with one slot the second
+        # simply erased the first, which is the healing bug in miniature.
+        for name in ("Second", "Third"):
+            await page.evaluate(f"() => {DOCK}.querySelector('.dk-tools .dk-btn').click()")
+            await page.wait_for_timeout(120)
+            await page.evaluate(
+                """(name) => {
+                    const root = document.getElementById('seneschal-dock').shadowRoot;
+                    root.querySelector('#dk-label').value = name;
+                    root.querySelector('#dk-path').value = '/' + name.toLowerCase();
+                    root.querySelector('.dk-save').click();
+                }""",
+                name,
+            )
+            await page.wait_for_timeout(200)
+        stack = await page.evaluate(
+            f"""() => {{
+                const rail = {DOCK}.querySelector('.dk-rail').getBoundingClientRect();
+                const els = [...{DOCK}.querySelectorAll('.dk-toast')];
+                const boxes = els.map(e => e.getBoundingClientRect());
+                let overlap = false;
+                for (let i = 0; i < boxes.length; i++)
+                    for (let j = i + 1; j < boxes.length; j++) {{
+                        const a = boxes[i], b = boxes[j];
+                        if (!(a.right < b.left || a.left > b.right ||
+                              a.bottom < b.top || a.top > b.bottom)) overlap = true;
+                    }}
+                return {{
+                    count: els.length,
+                    texts: els.map(e => e.textContent),
+                    overlapEachOther: overlap,
+                    allBesideRail: boxes.every(t => t.right <= rail.left + 1 || t.left >= rail.right - 1),
+                    allOnScreen: boxes.every(t => t.left >= 0 && t.right <= innerWidth
+                                                  && t.top >= 0 && t.bottom <= innerHeight),
+                }};
+            }}"""
+        )
+        check(stack["count"] >= 2, "two messages can be on screen at once", str(stack))
+        check(not stack["overlapEachOther"], "stacked messages do not cover each other", str(stack))
+        check(stack["allBesideRail"], "every message sits beside the rail", str(stack))
+        check(stack["allOnScreen"], "and every message is fully on screen", str(stack))
 
         # Heal-all asks with the GAME's costing line, not one we computed.
         await page.evaluate(f"() => {DOCK}.querySelector('.dk-healall').click()")

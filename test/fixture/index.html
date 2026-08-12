@@ -95,13 +95,27 @@
     //     WITH A DIGIT ("60 scouts lost…"). Flattened with textContent those
     //     weld into "100/6560" and the Haunted warning silently dies. Keep the
     //     two in separate elements or that regression walks back in unseen.
-    const rites = {
+    // Persisted in localStorage because the dock now performs rites in a hidden
+    // same-origin FRAME: the frame's own JS state dies with it, and localStorage
+    // is shared across same-origin frames (CLAUDE.md finding 11), so this is how
+    // the test observes what a rite actually did — the same way the real game's
+    // state outlives the frame by living on the server.
+    const RITES_KEY = 'fixture.rites';
+    const defaults = {
       souls: 3, dead: 284745,
       disturbance: 12, tolerance: 50,
       harvestYield: 1,
       rate: { souls: 1, dead: 1, per: 1000 },
       scoutsLost: 60,
+      log: [],
     };
+    let rites;
+    try { rites = { ...defaults, ...(JSON.parse(localStorage.getItem(RITES_KEY)) || {}) }; }
+    catch { rites = { ...defaults }; }
+    const saveRites = () => {
+      try { localStorage.setItem(RITES_KEY, JSON.stringify(rites)); } catch { /* fine */ }
+    };
+    const noteRite = (entry) => { rites.log = [...(rites.log || []), entry]; saveRites(); };
     const riteCost = (want) => {
       const blocks = Math.ceil(want / rites.rate.per);
       return { souls: blocks * rites.rate.souls, dead: blocks * rites.rate.dead };
@@ -143,6 +157,7 @@
       panel.querySelector('[data-rite="harvest"] button').addEventListener('click', () => {
         rites.souls += rites.harvestYield;
         rites.disturbance += 4;
+        noteRite('harvest');
         document.getElementById('log').textContent = 'rite:harvest';
         renderRites();
       });
@@ -151,15 +166,28 @@
         const want = Number(input.value) || 0;
         const cost = riteCost(want);
         if (cost.souls > rites.souls || cost.dead > rites.dead) {
+          noteRite('host-refused');
           document.getElementById('log').textContent = 'rite:host-refused';
           return;
         }
         rites.souls -= cost.souls;
         rites.dead -= cost.dead;
         rites.disturbance += 6;
+        rites.host = (rites.host || 0) + want;
+        noteRite('host:' + want);
         document.getElementById('log').textContent = 'rite:host:' + want;
         renderRites();
       });
+    }
+
+    // Loaded AT the rites path — which is how the dock reaches them now, in a
+    // hidden frame rather than by navigating the user. Render on load, the way
+    // the real server-rendered page does.
+    if (/\/necromancy$/.test(location.pathname)) {
+      // A seam for the refusal path: a rites page that renders no balance.
+      let blank = false;
+      try { blank = localStorage.getItem('fixture.norites') === '1'; } catch { /* fine */ }
+      if (!blank) renderRites();
     }
 
     // Stand in for the SPA router: record clicks instead of navigating, so the

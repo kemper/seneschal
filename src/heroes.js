@@ -317,6 +317,14 @@
     }
   }
 
+  /**
+   * A hidden same-origin frame for driving the game's own controls.
+   *
+   * Shared rather than heal-specific: the rites need exactly the same thing.
+   * Measured (CLAUDE.md finding 11) — loading a page and selecting a control
+   * costs GETs only, no POSTs and no storage writes, so getting to a button is
+   * free and only the final click mutates anything.
+   */
   function openFrame(path) {
     const frame = document.createElement("div");
     frame.setAttribute("data-seneschal", "frame"); // never indexed by the scanner
@@ -331,7 +339,7 @@
     document.documentElement.appendChild(frame);
 
     const ready = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("the siege page did not load in time")), FRAME_LOAD_MS);
+      const timer = setTimeout(() => reject(new Error(`${path} did not load in time`)), FRAME_LOAD_MS);
       el.addEventListener("load", () => { clearTimeout(timer); resolve(); }, { once: true });
     });
     return { host: frame, el, ready, close: () => frame.remove() };
@@ -607,5 +615,10 @@
     heal,
     HEROES_PATH,
     CONQUEST_PATH,
+    openFrame,
+    pollUntil,
+    wait,
+    SETTLE_MS,
+    STEP_MS,
   };
 })();
