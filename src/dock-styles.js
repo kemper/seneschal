@@ -122,6 +122,38 @@
 .dk-tools .dk-btn { justify-content: center; padding: 5px 8px; color: #7d8798; }
 .dk-tools .dk-btn:hover { color: #e6e9ef; }
 
+/* A second, narrower column INSIDE the tab: tools that act on what the rail
+   already displays rather than taking you anywhere. Its own panel, because it
+   is not part of the menu and should not scroll, collapse or reflow with it —
+   and it lives outside .dk-rail in the DOM for the same reason, since render()
+   rebuilds the rail wholesale and would drop a spinner mid-refresh. */
+.dk-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: rgba(20, 24, 31, 0.94);
+  border: 1px solid #2c333f;
+  border-radius: 9px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
+}
+/* Spaced off the tab, which is itself flush against the rail. The rail keeps
+   the screen edge; this column never touches it. */
+.dk-right .dk-side { margin-right: 6px; }
+.dk-left  .dk-side { margin-left: 6px; }
+.dk-side .dk-btn {
+  width: auto;
+  justify-content: center;
+  padding: 6px 7px;
+  color: #7d8798;
+}
+.dk-side .dk-btn:hover, .dk-side .dk-btn:focus-visible { color: #e6e9ef; }
+/* Working, not unavailable. Full opacity and amber, the same distinction the
+   heal buttons draw — a dimmed control reads as one you cannot press. */
+.dk-side .dk-btn.dk-busy { color: #d9a441; cursor: progress; }
+
 /* The pull tab: always visible, so a hidden rail can always be brought back. */
 .dk-tab {
   flex: none;

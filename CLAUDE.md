@@ -320,6 +320,33 @@ heal buttons in a row therefore healed one hero. They line up now and are asked
 in the order clicked; opening the add form drains the queue rather than leaving
 four questions waiting to pounce.
 
+**28. A control that survives a re-render must live OUTSIDE `.dk-rail`.**
+`render()` rebuilds the rail wholesale, which is fine for rows that describe
+state but fatal for a button that is itself mid-action — the refresh button
+kicks off `_refreshHeroes()`, which calls `render()` on success, which would
+have replaced the very element holding the spinner. So the ↻ lives in
+`.dk-side`, a second narrow column built once in `_build()` and never touched by
+`render()`. This is the same hazard `_paintHealing` and `_paintPending` work
+around by keying on `dataset.healKey` / item id instead of element identity;
+outside the rail there is nothing to key on because nothing is replaced.
+
+`.dk-side` sits between the form and the **tab** in DOM order, not between the
+tab and the rail: the wrap is `row` / `row-reverse` per side, and the tab is
+drawn with one border missing so it butts flush against the rail it opens. Slip
+a column in there and that seam opens up on both edges.
+
+**28b. The refresh reads the balance through `_openRites()`, not `fetch`.**
+Everything else reads with `fetch` + `DOMParser`, which is cheaper — but
+`DOMParser` does not run scripts, and more importantly the rites panel is the
+one page whose numbers also feed the confirmation sheet. Reading it two
+different ways is how the figure in the rail and the figure you approve start
+disagreeing. One reader, one code path.
+
+**28c. `_refreshHeroes()` returns `true` / `false` / `null`.** `null` means "one
+was already in flight", which is not a failure — reporting it as one would have
+had the refresh button announce a broken roster read every time it raced the
+background refresh that runs on every page load.
+
 ## Working agreements
 
 - **Verify in a browser; do not trust reading.** Every bug so far was caught by
@@ -347,11 +374,11 @@ node --test test/heroes.test.mjs    # 14
 node --test test/pending.test.mjs   # 11
 node --test test/necro.test.mjs     # 47
 python3 test/e2e.py                 # 26
-python3 test/dock.py                # 127
+python3 test/dock.py                # 145
 python3 test/harvest.py             # 15
 ```
 
-306 checks. Keep them passing.
+324 checks. Keep them passing.
 
 The Python tests need Playwright. There is a local `.venv` (gitignored):
 `.venv/bin/python3 test/dock.py`. `test/chromium_path.py` finds a Chromium

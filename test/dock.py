@@ -634,6 +634,110 @@ async def main() -> int:
         check(detail and "souls" in detail and "raisable" in detail,
               "with what a raise would draw on underneath it", str(detail))
 
+        # --- the refresh button ----------------------------------------------
+        # Everything the rail displays is a CACHED reading, and each one lands on
+        # its own schedule: the roster on navigation, the balance only while you
+        # happen to be standing on the rites. "Is this still true?" had no answer
+        # short of reloading the game.
+        async def side_probe() -> dict:
+            return await page.evaluate(
+                f"""() => {{
+                    const side = {DOCK}.querySelector('.dk-side');
+                    const rail = {DOCK}.querySelector('.dk-rail');
+                    if (!side || !rail) return {{ there: false }};
+                    const s = side.getBoundingClientRect();
+                    const r = rail.getBoundingClientRect();
+                    const btn = side.querySelector('.dk-refresh');
+                    const icon = btn && btn.querySelector('.dk-icon');
+                    return {{ there: true,
+                              inboard: s.right <= r.left + 1,
+                              overlaps: !(s.right < r.left || s.left > r.right),
+                              onScreen: s.left >= 0 && s.top >= 0
+                                        && s.right <= innerWidth && s.bottom <= innerHeight,
+                              refresh: !!btn,
+                              disabled: btn ? btn.disabled : null,
+                              opacity: btn ? getComputedStyle(btn).opacity : null,
+                              aria: btn ? btn.getAttribute('aria-busy') : null,
+                              spinner: !!(icon && icon.classList.contains('dk-spinner')),
+                              glyph: icon ? icon.textContent : null }};
+                }}"""
+            )
+
+        geom = await side_probe()
+        check(geom["there"], "a tools column stands beside the rail")
+        check(geom["refresh"], "with a refresh button on it", str(geom))
+        # Its own panel, inboard of the links: the rail keeps the screen edge.
+        check(geom["inboard"], "inboard of the quick links, never on top of them", str(geom))
+        check(not geom["overlaps"], "and clear of the rail entirely", str(geom))
+        check(geom["onScreen"], "and fully on screen", str(geom))
+        check(geom["glyph"] == "↻", "showing its own glyph at rest", str(geom))
+
+        # Move the balance behind the extension's back. Nothing on screen says so
+        # — the user is standing on /expeditions — which is exactly the state the
+        # button exists to resolve.
+        await page.evaluate(
+            """() => {
+                const k = 'fixture.rites';
+                const r = JSON.parse(localStorage.getItem(k) || '{}');
+                r.souls = 42; r.dead = 777;
+                localStorage.setItem(k, JSON.stringify(r));
+            }"""
+        )
+        await page.wait_for_timeout(600)  # longer than one balance poll
+        stale_detail = await page.evaluate(
+            f"""() => {{ const d = {DOCK}.querySelector('[data-role="souls-detail"]');
+                        return d ? d.textContent : ''; }}"""
+        )
+        check("42" not in stale_detail,
+              "the rail does not notice a change made off the page it is on", str(stale_detail))
+
+        await page.evaluate(f"() => {DOCK}.querySelector('.dk-refresh').click()")
+        await page.wait_for_timeout(400)
+        busy = await side_probe()
+        check(busy["spinner"], "pressing it swaps the glyph for a spinner", str(busy))
+        check(busy["aria"] == "true", "and marks itself aria-busy", str(busy))
+        # BUSY IS NOT DISABLED. A dimmed control reads as one you cannot use,
+        # which is how the heal buttons managed to look broken while working.
+        check(busy["disabled"] is False and busy["opacity"] == "1",
+              "working, not unavailable — it stays at full strength", str(busy))
+
+        # Poll for the result rather than sleeping past it: the confirmation
+        # clears itself after a couple of seconds, and a fixed wait long enough
+        # for the frame is also long enough to miss the message entirely.
+        toast = ""
+        for _ in range(60):
+            toast = await page.evaluate(
+                f"() => [...{DOCK}.querySelectorAll('.dk-toast')].map(t => t.textContent).join(' | ')"
+            )
+            if "Refreshed" in toast or "Could not read" in toast:
+                break
+            await page.wait_for_timeout(250)
+
+        refreshed = await page.evaluate(
+            f"""() => {{ const d = {DOCK}.querySelector('[data-role="souls-detail"]');
+                        return d ? d.textContent : ''; }}"""
+        )
+        check("42 souls" in refreshed, "refresh re-reads the soul balance", str(refreshed))
+        check("777 raisable" in refreshed, "and the pool of fallen with it", str(refreshed))
+        # The whole point: it reads the rites without taking you to them.
+        check(await log() == here, "and never moves the user", f"log={await log()!r}")
+        check(
+            await page.evaluate("() => location.pathname") != "/expeditions/buildings/necromancy",
+            "the tab stays on the page they chose",
+        )
+
+        # It names the numbers rather than saying "done": what they are NOW is
+        # the reason you pressed it.
+        check("Refreshed" in toast and "42 souls" in toast,
+              "it reports the balance it read", f"toast={toast!r}")
+        check("heroes" in toast, "and the roster it read alongside it", f"toast={toast!r}")
+
+        await page.wait_for_timeout(500)
+        settled = await side_probe()
+        check(not settled["spinner"] and settled["glyph"] == "↻",
+              "the glyph comes back once it lands", str(settled))
+        check(settled["aria"] == "false", "and it is no longer aria-busy", str(settled))
+
         # --- a rites page with no balance on it fails LOUDLY -----------------
         await page.evaluate("() => localStorage.setItem('fixture.norites', '1')")
         await click_entry("Small host")
