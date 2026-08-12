@@ -14,19 +14,24 @@ it is a full bearer credential.
 
 ## Findings that cost real effort to get — don't rediscover them
 
-**1. The game's sub-navigation is CONTEXTUAL.** Only six labels appear on every
-page (`REALM · EXPEDITIONS · CHAMPIONS · INVENTORY · LORE · RANKINGS`).
-`BUILDINGS`, `MARKET`, `DELVE`, `ARENA`, `🐗 HUNT`, `🛠 CRAFTABLES` render only
-once you are inside their parent door. Measured by diffing six captures of the
-live page: six labels at 6/6, everything else 1/6–4/6. **No single page shows the
-whole nav**, which is why `tools/harvest-nav.js` walks the doors and why the
-palette merges three sources instead of scanning one header.
+**1. The game's sub-navigation is CONTEXTUAL.** Confirmed against the live
+site on 2026-08-08 by fetching all 19 reachable nav pages: of **35** distinct
+entries, exactly **six** appear on every page (`REALM · EXPEDITIONS ·
+CHAMPIONS · INVENTORY · LORE · RANKINGS`). Everything else is 8/19 (the
+Expeditions row), 5/19 (the Realm row), or 2/19 and below. **No single page
+shows the whole nav**, which is why the palette merges three sources instead of
+scanning one header.
 
-**2. Navigate by CLICKING a real element, never `location.href`.** The game is a
-client-routed SPA, and `/buildings` is reported to render near-empty on a hard
-load while painting correctly when reached via the nav link. That report is
-second-hand and unverified — but clicking costs nothing and doesn't depend on it
-being true. `location.assign` is the fallback only.
+**2. Prefer CLICKING a real element, but the old reason for it was WRONG.**
+The story was that `/buildings` "renders near-empty on a hard load". Measured:
+`/buildings` returns **404**. So do `/lore`, `/inventory` and `/craftables` —
+all four were invented by the pre-harvest catalog and none is a real route.
+The near-empty page was a 404 shell. The real paths are `/expeditions/buildings`,
+`/quests`, `/expeditions/inventory` and
+`/expeditions/buildings/craftables`. Clicking a live anchor is still preferred
+(it keeps the router's state and costs nothing), but `location.assign` to a
+**harvested** path is fine — the thing to distrust is a guessed URL, not a hard
+load. **Never infer a path from a label.**
 
 **3. The game changes absurdly fast** — on the order of a shipped release per
 day, and it reorganised its entire navigation in v1.96. **Design so failures are
@@ -68,7 +73,157 @@ coupling away, the failure is made LOUD: walk the door, wait `RESOLVE_MS`, and
 if the entry never appears, warn on screen and in the console naming the
 pattern. `test/dock.py` holds that line. Don't "fix" it into a silent no-op.
 
-**10. One feature SPENDS resources, and it is built to fail closed.** "Raise
+**10. There is NO heal endpoint, and no REST API for mutations at all.**
+Measured: the game drives writes through Next.js **Server Actions**
+(`createServerReference` x33, `callServer` x50). Every `/api/*` route in the
+whole bundle set is a peripheral read — `alliances/pending-count`,
+`messages/unread-count`, `news`, `conquest/chat`, `auth/logout`. The heal
+button's `onClick` is a plain closure with **no exposed action reference** in
+props or fiber, so there is nothing to call directly; and a hand-built
+`Next-Action` POST would depend on a per-build hash that changes every deploy.
+**Don't go looking for the endpoint again — it isn't there.**
+
+**11. The hidden same-origin iframe is the safe way to drive game UI.**
+The site sends no `X-Frame-Options` and no CSP, so it frames itself and
+`contentDocument` is reachable. Measured for loading `/conquest` and selecting
+a siege location: **33 requests, all GET, zero POSTs, zero localStorage
+writes.** So getting to a control costs nothing and cannot disturb the page the
+user is looking at — only the final click mutates. Note localStorage IS shared
+across same-origin frames, which is why the write count was checked rather than
+assumed.
+
+**12. Heal buttons carry `title="Heal <Name> for 4 <Resource>"`.** Hero, cost
+and currency in plain readable text — the durable handle. Each class heals with
+a different resource (mage Cinder-Coal, warrior Greathide, rogue Fluxsalt,
+archer Warden-Resin). Buttons are `disabled` when `hp === maxHp`.
+
+**13. `/heroes` prints the roster TWICE**, and both are needed: a roster row
+with class icon and level (`● 🔮 Krogdolf Lv50`) and an HP row with current/max
+(`Heroes Krogdolf 489/489 · ...`). The page also carries ratios that are NOT hp
+(`Power 900/70`, `Morale 100/85`); the parser rejects them by requiring
+`current <= max`.
+
+**14. Healing has TWO separate systems — don't conflate them.**
+  - *Siege provisions*: the assault panel's `⛑` button, `title="Heal <Name> for
+    4 <Resource>"`, class-specific currency, only inside a siege.
+  - *Elixirs*: craftable consumables on `/expeditions/buildings/craftables`,
+    used via a `USE ON HERO` button. Measured 2026-08-08:
+
+    | Elixir | Mends | Cost | Held |
+    | --- | --- | --- | --- |
+    | 🧪 Salveroot Tonic | +10 HP | 6 timber + 2 iron | 0 |
+    | 🍵 Knitbone Draught | +25 HP | 12 timber + 6 iron | 0 |
+    | 💧 Wardenbalm Elixir | +50 HP | 2 wardenstone + 2 Warden-Resin | 1 |
+
+    Wardenbalm also rouses a gravely-wounded champion to march at once.
+    Craftables page buttons: `CRAFT · SMELT · USE ON HERO · USE VIAL · TRADE ·
+    REFINE · BUY`. `USE ON HERO` is paired with a hero `<select>` whose options
+    read `Krogdolf — 410/489 HP`, and appears for elixirs you actually hold.
+
+  - *Heal all*: `[ 💚 HEAL ALL HEROES ]` on `/heroes` DOES exist — an earlier
+    note here said it did not, because it only renders when someone is wounded.
+    It prices itself: `1 wounded · 79 HP to mend · brews 4 draughts: 48 timber ·
+    24 iron`. **Quote that line, never recompute it** — the game picks the
+    elixirs and does the arithmetic, and a second implementation would
+    eventually disagree with it.
+
+**14b. An ACTIVE siege is one rendering assault locations, not one named.**
+`/conquest` names every bulwark you could attack alongside the ones you are
+besieging, so a `The X Bulwark` regex reported three active sieges when there
+were none. The structural signal is a row of location buttons (The Gate / West
+Wall / Postern / Regent's Hall …); tie the name to the siege by walking UP from
+those buttons. You must be committed to a siege before provisions healing is
+possible at all.
+
+**15. Heal and "use" controls only render when a hero is DAMAGED.** With a full
+roster the buttons are `disabled` (siege panel) or absent (elixirs), which is
+why several recon passes came back empty. Plan recon for a moment when someone
+is actually hurt.
+
+**16. "Failed to fetch" on every page is usually just navigation.** Each
+in-game click is a full page load, which cancels requests in flight and rejects
+them as `TypeError: Failed to fetch`. `heroes.js` sets a flag on `pagehide` and
+`isAbort()` classifies these, so callers stay silent. Don't "fix" a cancelled
+request by retrying it — the next page will refresh anyway.
+
+**17. Never let one button pick which resource to spend.** A single `⛑` heal
+chose the method itself and spent a Wardenbalm (+50 HP, the scarcest, needing
+wardenstone) closing a 79 HP wound. Every spending action now names its method
+and quotes its price BEFORE it runs — one button per method, each with a title
+giving the elixir, what it mends, how many you hold, and what brewing would
+cost. Elixir cards are keyed to their "Mend a Hero · +N HP" use-block by the
+MEND AMOUNT; the hero picker and USE ON HERO only exist for an elixir you
+actually hold, so a held count of 0 means CRAFT first.
+
+**18. NEVER `alert()`, `confirm()` or `prompt()` — not now, not later.**
+A standing instruction from the user. Native dialogs are browser chrome, so
+they read as Chrome speaking rather than the extension; they cannot be styled
+or placed; they freeze the page and every timer on it; and under automation
+they hang the session outright (which is why the browser-automation guidance
+says the same thing). Anything needing an answer uses `Dock._ask()`, which
+opens the `.dk-ask` panel beside the rail and resolves a promise. `test/dock.py`
+registers a `page.on("dialog")` listener that fails the run if one ever fires —
+keep it, because Playwright auto-dismisses dialogs when nothing is listening,
+so a `confirm()` would otherwise pass silently.
+
+**19. Verify a mutation by POLLING the server, not by one read after a wait.**
+A heal is a Server Action plus a re-render, and that round trip is not a fixed
+cost. `healAll` clicked, waited 2s, read once, and reported "did not take" on a
+heal that had gone through — the user saw it work on `/heroes` a moment later.
+`pollUntil()` in `heroes.js` now reads until the change appears or 15s passes,
+treating a failed read as "not yet" (a cancelled request during navigation is
+routine). When it still hasn't changed, `blockedBy(doc)` reports any
+`role="dialog"` in the frame rather than shrugging — but it never clicks
+through one, because an unidentified button here can commit an assault.
+
+**20. A DEFAULT ONLY EVER REACHES A FRESH INSTALL.** Changing
+`DEFAULT_ITEMS` does nothing for anyone already running — their menu was
+written to storage on first load and stays there. This has now bitten twice
+(a repaired Craftables path that still walked to /empire; a new menu nobody
+would have seen). Two mechanisms in `config.js` close it, both keyed on "still
+exactly what we shipped, therefore ours":
+  - `LEGACY_SEEDS` repairs individual entries we got wrong.
+  - `SHIPPED_MENUS` holds every menu we have ever shipped, verbatim, and
+    replaces a stored one that still fingerprints identical with the current
+    default. **When you change `DEFAULT_ITEMS`, paste the outgoing list into
+    `SHIPPED_MENUS`** or the change silently applies to new installs only.
+
+The fingerprint covers every field including icon and order, so adding,
+removing, reordering or re-icing ONE entry makes the menu the user's and we
+never touch it again.
+
+**The two mechanisms interact, and getting it wrong is silent.** `LEGACY_SEEDS`
+rewrites entries on EVERY load, so as soon as anything writes settings back —
+collapsing the rail, adding a link, switching siege — storage holds the
+*repaired* menu, not the shipped one. Fingerprinting the raw form therefore
+missed every already-repaired menu, which is a config that can never be brought
+forward again. `isShippedMenu` compares in MIGRATED form on both sides.
+Reported as "I'm not seeing it update after a refresh"; keep the tests that
+pin it.
+
+**Also: an unpacked extension does not pick up file changes on a page
+refresh.** Reload it at `chrome://extensions` first. The ID is derived from the
+directory path and does NOT change. Rule that out before debugging config.
+
+**21. The rail's LINK LIST scrolls, not the rail.** Twelve links plus a full
+hero panel outgrow a laptop screen. When `.dk-rail` scrolled as one block the
+heal buttons and the ＋/⚙ tools fell below the fold — caught by a screenshot,
+not by the suite. `.dk-items` now has `flex: 0 100 auto` so it surrenders space
+first (a link you scroll to is a far smaller loss than a heal button you cannot
+see), `.dk-heroes` shrinks only after that, and `.dk-sep`/`.dk-tools` never
+shrink. `min-height: 0` is what permits any of it. `test/dock.py` pins this at
+a 720px viewport.
+
+**21b. Anything that DISPLAYS A READING must live outside `.dk-items`.** The
+corollary of 21, and it bit immediately: the "Raise host" rite carries the soul
+and raisable-dead badge, it was the last entry in the menu, and `.dk-items` is
+by design the first thing to surrender space — so the one number the user asked
+to see was the one guaranteed to scroll out of sight. Rites now render in
+`.dk-rites`, a `flex: 0 0 auto` block between the scroller and the hero panel.
+Caught by a screenshot with a green suite, again. A row you have to scroll to
+find is a row you will not look at.
+
+**22. One feature SPENDS resources, and it is built to fail closed.** "Raise
 host" clicks a rite that consumes souls and can sacrifice living veterans — the
 only irreversible thing in the extension. Its vocabulary comes from a page-text
 capture (2026-07-01, when the rites still lived on `/expeditions`) and its
@@ -83,12 +238,49 @@ balance. **Do not collapse any of those into a happy path.**
 `tools/harvest-necromancy.js` turns the guess into a measurement — it reads
 only, and should be run before the inferred locators are trusted.
 
-**11. A `transform` makes an element the containing block for its
+**23. A `transform` makes an element the containing block for its
 `position: fixed` descendants.** `.dk-wrap` is transformed to centre itself
 vertically, so the confirmation scrim nested inside it was not full-screen at
 all — it was confined to the rail's own box, rendering a 420px dialog as a
 160px column crushed against the edge. The suite was green; the screenshot was
-not. The scrim now lives outside `.dk-wrap`. Keep it there.
+not. The scrim now lives outside `.dk-wrap`, as does the toast, which had the
+same bug for the same reason. Keep both out there.
+
+**24. The rites panel, MEASURED 2026-08-11.** The July page-text capture that
+`necro.js` was built from was stale in three ways, and the DOM guesses built on
+it were actually fine — it was the *vocabulary* that was wrong. Live truth:
+
+  - It is at **`/expeditions/buildings/necromancy`**, and it renders in the
+    **CHAMPIONS** row, not the Realm row. The default door shipped as `/empire`,
+    whose row is Empire · Buildings · Market · Military · Statecraft — no
+    Necromancy anywhere in it, so the entry walked the wrong door and then
+    correctly announced it could not find the pattern. Take the path from
+    `catalog.js`; the group name is not the door and the label is not the path.
+  - **A host costs 1 dead + 1 soul per 1,000 raised**, stated on the card. Not
+    one soul per ghost — the old model overstated a 10,000 host by 1000x and
+    would have offered to sacrifice veterans to cover a shortfall that does not
+    exist. The rate is now PARSED, and no rate means the whole rite refuses.
+    The dead are a second currency with a hard ceiling (the input's `max` is the
+    raisable pool) and **no sacrifice refills them**, so never let "souls" stand
+    in for the whole price.
+  - `Disturbance 100/65` sits directly above a line beginning `60 scouts lost`.
+    Through `textContent` those weld into `Disturbance 100/6560`, and the
+    tolerance parsed as **6560**, so `disturbanceWarning` never fired on grounds
+    that were already 35 over and Haunted. Balances are now read through
+    `blockText()`, which restores element boundaries without `innerText`'s
+    reflow. **A number pattern must never end on a separator class.**
+
+What held up: the card-per-rite shape, the 1-hop walk from label to button, the
+over-walk refusal, and `hasOwnValueSetter: true` — React really does install its
+own setter, so the native-setter write in `setNumber` is doing real work.
+
+**One guard is currently incidental, and that is deliberate.** The live
+Soul-Harvest button reads `Sacrifice · +1 💀` — a glyph, not the word "souls" —
+so `parseSoulDelta` returns null, the plan comes back blocked, and the
+sacrifice path cannot run against the real game at all. Teaching it the 💀 glyph
+would ARM the only irreversible action in the extension. That is a decision to
+take deliberately, with the user, not a gap to tidy up; `necro.test.mjs` pins it
+so nobody tidies it up by accident.
 
 ## Working agreements
 
@@ -112,15 +304,21 @@ not. The scrim now lives outside `.dk-wrap`. Keep it there.
 ```bash
 node --test test/fuzzy.test.mjs     # 12
 node --test test/learned.test.mjs   # 11
-node --test test/config.test.mjs    # 26
+node --test test/config.test.mjs    # 43
+node --test test/heroes.test.mjs    # 14
 node --test test/pending.test.mjs   # 11
-node --test test/necro.test.mjs     # 28
+node --test test/necro.test.mjs     # 44
 python3 test/e2e.py                 # 26
-python3 test/dock.py                # 74
+python3 test/dock.py                # 114
 python3 test/harvest.py             # 15
 ```
 
-203 checks. Keep them passing.
+290 checks. Keep them passing.
+
+The Python tests need Playwright. There is a local `.venv` (gitignored):
+`.venv/bin/python3 test/dock.py`. `test/chromium_path.py` finds a Chromium
+across the cloud container and a Mac; override with `SENESCHAL_CHROMIUM`.
+Never run `playwright install` in the container.
 
 `test/dock.py` drives the options page and the toolbar popup as real
 extension pages (get the id from `ctx.service_workers[0].url`), which is also
@@ -133,29 +331,19 @@ Two gotchas already solved — don't re-hit them:
 - `node --test <dir>` needs an explicit file path in some environments; pass the
   file.
 
-Chromium for tests lives at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`.
-Never run `playwright install`. Launch with `--no-sandbox
---disable-setuid-sandbox --disable-quic --no-proxy-server`.
+Launch Chromium with `--no-sandbox --disable-setuid-sandbox --disable-quic
+--no-proxy-server`.
 
 ## Open work, in priority order
 
-**1a. Measure the rites panel — the highest-value ask, because it is the one
-place a wrong guess spends something.** `src/necro.js` locates the Spectral
-Host and Soul-Harvest rites from a July-1 page-text capture and an *inferred*
-DOM shape. Ask the user to open the rites panel (REALM › NECROMANCY), paste
-`tools/harvest-necromancy.js` into DevTools, and hand back the JSON. It reads
-only. Anything it reports as `MISSING` or `AMBIGUOUS` is precisely what the
-extension will refuse on. Two specific questions it answers: does Spectral Host
-have a **number field** (if not, the size must come from the button text, and
-if that does not state a cost the feature refuses outright), and does React
-install its own `value` setter (which decides whether the native-setter write
-is doing real work).
+**1. ~~Harvest the real destination list.~~ DONE 2026-08-08.** `src/catalog.js`
+now holds all 35 live entries with real paths and real groups, verified
+35/35 with a zero diff. `tools/harvest-nav.js` regenerates it and reports
+"n gone, n new, n moved" against what is shipped.
 
-**1. Harvest the real destination list.** `src/catalog.js` was written from
-captured page text without live-site access, and it shows: **11 of its 23 entries
-have no path at all**, and `/lore` and `/inventory` are inferred. Ask the user to
-open wardenfall.com, paste `tools/harvest-nav.js` into DevTools, and hand back
-what it prints; paste that over the array in `catalog.js`.
+**1a. ~~Measure the rites panel.~~ DONE 2026-08-11**, against the live site —
+see finding 24 for what it changed. The inferred DOM shape held; the
+*vocabulary* did not.
 
 **0. Settings live in one object**, `seneschal.settings.v1` in
 `chrome.storage.local`: `{ palette: {enabled}, dock: {enabled, side, collapsed,
@@ -172,9 +360,22 @@ and collapsing `scanner.js` to a single find-anchor-for-path helper, removes
 and click-then-navigate activation. This was offered and **not yet decided** —
 confirm before ripping it out.
 
-**3. A harvester diff mode** was proposed and not built: have `harvest-nav.js`
-compare what it found against the shipped catalog and report "3 gone, 2 new,
-1 moved" instead of a blind regenerate. ~15 lines, dev-time only.
+**3. ~~A harvester diff mode.~~ DONE.** `harvest-nav.js` diffs against
+`SEN.catalog` when the extension is loaded on the page.
+
+**3b. A label can carry live state.** `MESSAGES` renders as "Messages 153" —
+the unread count is IN the label. The harvester strips a trailing number and
+keys entries on the stable form; getting this wrong made every run report
+Messages as both gone and new. Anything that matches or dedupes on a visible
+label must assume the label can move.
+
+**3c. Selection state is styling-only.** The raid page's region picker marks
+the selected button with Tailwind colour classes (`border-amber-400
+text-amber-300`) and nothing else — no `aria-selected`, no `data-state`, not in
+the URL, not in localStorage. To detect a selection, diff a button's class
+signature against its SIBLINGS (odd-one-out) rather than hardcoding a colour,
+so a palette change cannot break it. `?realm=near` IS in the URL, so that axis
+is preserved for free by restoring the full URL.
 
 **4. Arena sound effects — deliberately NOT in this repo yet.** The user wants
 spell sounds, bow twangs, hit grunts, death cries. Playing audio is trivial;
@@ -192,8 +393,24 @@ explicit yes rather than sliding into it.
 
 ## Live-site access
 
-There is no automated login here. All live-site work goes through DevTools
-scripts the user pastes and reports back — design tooling for that.
+Two routes, in order of preference:
+
+**1. `claude --chrome` from a LOCAL session.** Claude Code drives the real
+browser through the Claude in Chrome extension, with the user's existing login.
+This is how the 2026-08-08 harvest was done. It needs a local CLI — the
+integration runs over Chrome **native messaging**, which is machine-local by
+construction, so a cloud session can never reach it. Teleport first
+(`claude --teleport <session-id>`), then `/chrome`.
+
+**2. DevTools scripts the user pastes and reports back** — design tooling for
+that when no browser is attached.
+
+**Do NOT drive the live site by clicking.** A click is a real navigation, which
+destroys the JS execution context and kills any in-page script mid-walk
+("Inspected target navigated or closed"). This is what made the first harvester
+fail in practice. **`fetch` + `DOMParser` instead**: the game server-renders its
+nav, the session cookie rides along automatically, nothing navigates, and it
+cannot be interrupted. Also far faster. Same rule for any future recon.
 
 If a pasted script mysteriously no-ops on the live site, **check for an open
 `role="dialog"` modal first**: the game's hero level-40 ascension whisper

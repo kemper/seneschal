@@ -25,11 +25,11 @@ import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from chromium_path import CHROMIUM  # noqa: E402
 from playwright.async_api import async_playwright  # noqa: E402
 
 EXT = Path(__file__).resolve().parents[1]
 FIXTURE = EXT / "test" / "fixture"
-CHROMIUM = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
 
 results: list[tuple[bool, str]] = []
 
@@ -40,9 +40,23 @@ def check(ok: bool, label: str, detail: str = "") -> None:
 
 
 def serve(directory: Path) -> tuple[int, socketserver.TCPServer]:
-    handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(  # noqa: E731
-        *a, directory=str(directory), **kw
-    )
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        """Serve extensionless game paths the way the real site does.
+
+        The hero panel fetches /heroes and /conquest, which on the live site
+        are pages, not files. Map them onto the fixture's .html so the panel
+        can be exercised end to end.
+        """
+
+        def translate_path(self, path):
+            bare = path.split("?")[0].rstrip("/")
+            if bare == "/expeditions/buildings/craftables":
+                return super().translate_path("/craftables.html")
+            if bare in ("/heroes", "/conquest"):
+                path = bare + ".html"
+            return super().translate_path(path)
+
+    handler = lambda *a, **kw: Handler(*a, directory=str(directory), **kw)  # noqa: E731
     httpd = socketserver.TCPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd.server_address[1], httpd
@@ -61,6 +75,13 @@ def staged_extension(port: int) -> Path:
 
 # Runs inside the page: the dock lives in a shadow root, so reach through it.
 DOCK = "document.getElementById('seneschal-dock').shadowRoot"
+
+# The shipped menu, in order. Kept in one place because two separate checks
+# depend on it: what a fresh install shows, and what clearing storage restores.
+DEFAULT_MENU = [
+    "Realm", "Champions", "Raids", "Sieges", "Arena", "Craftables",
+    "Spellbook", "Military", "Market", "Holds", "Stable", "Raise host",
+]
 
 
 async def main() -> int:
@@ -85,6 +106,19 @@ async def main() -> int:
         page = await ctx.new_page()
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
+        # Native alert/confirm/prompt are banned outright. Playwright
+        # auto-dismisses dialogs, so without this listener a confirm() would
+        # pass silently here and freeze a real browser instead.
+        dialogs: list[str] = []
+
+        def on_dialog(d):
+            dialogs.append(f"{d.type}: {d.message}")
+            # Registering a listener turns OFF Playwright's auto-dismiss, so
+            # this has to dismiss it or the whole run hangs — which is the same
+            # failure mode a native dialog would cause for a real user.
+            asyncio.ensure_future(d.dismiss())
+
+        page.on("dialog", on_dialog)
         await page.goto(f"http://127.0.0.1:{port}/index.html", wait_until="load")
         await page.wait_for_timeout(700)  # let document_idle injection land
 
@@ -117,16 +151,76 @@ async def main() -> int:
         check(await page.locator("#seneschal-root").count() == 1, "the palette still mounts alongside it")
 
         seeded = await labels()
-        for want in ["Realm", "Expeditions", "Buildings", "Craftables", "Arena", "Hunt"]:
-            check(want in seeded, f"default menu contains {want}", str(seeded))
+        check(
+            seeded == DEFAULT_MENU,
+            "default menu is the configured list, in order",
+            str(seeded),
+        )
         check("dk-right" in await wrap_class(), "dock defaults to the right edge")
 
         # --- a url entry clicks the live anchor ------------------------------
-        check(await click_entry("Realm"), "Realm entry is clickable")
-        await page.wait_for_timeout(200)
-        check(await log() == "navigated:/empire", "url entry clicks the live nav link", f"log={await log()!r}")
+        # MILITARY is in the realm sub-nav right now, so this must be served by
+        # clicking that anchor rather than by navigating to /military.
+        check(await click_entry("Military"), "Military entry is clickable")
+        await page.wait_for_timeout(250)
+        check(
+            await log() == "navigated:/military",
+            "url entry clicks the live nav link",
+            f"log={await log()!r}",
+        )
 
-        # --- a menu entry already on the page --------------------------------
+        # A primary door, reachable from the header on every page.
+        await click_entry("Champions")
+        await page.wait_for_timeout(250)
+        check(
+            await log() == "navigated:/heroes",
+            "url entry for a primary door works from anywhere",
+            f"log={await log()!r}",
+        )
+
+        # --- menu entries ----------------------------------------------------
+        # The shipped defaults are all `url` entries now that the nav harvest
+        # found real paths for them, so the pattern behaviour gets its own
+        # config rather than riding on whatever the defaults happen to be.
+        worker = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
+        ext_id = worker.url.split("/")[2]
+        options = await ctx.new_page()
+        await options.goto(f"chrome-extension://{ext_id}/options/options.html", wait_until="load")
+        await options.wait_for_timeout(300)
+
+        async def install(items: list[dict], note: str = "") -> None:
+            await options.evaluate(
+                """async (items) => {
+                    const key = 'seneschal.settings.v1';
+                    const cfg = (await chrome.storage.local.get(key))[key]
+                                ?? { palette: { enabled: true },
+                                     dock: { enabled: true, side: 'right', collapsed: false, items: [] } };
+                    cfg.dock.items = items;
+                    // Stamped at the current version on purpose: a test that
+                    // installs a menu is testing THAT menu, and a config still
+                    // marked v1 would pick up the one-time host-entry migration
+                    // and quietly gain a fourteenth row. The migration has its
+                    // own tests in config.test.mjs.
+                    cfg.version = 2;
+                    await chrome.storage.local.set({ [key]: cfg });
+                }""",
+                items,
+            )
+            await page.bring_to_front()
+            await page.wait_for_timeout(400)
+
+        await install([
+            {"id": "t-craft", "icon": "🛠", "label": "Craftables", "type": "menu", "match": "craftables"},
+            {"id": "t-arena", "icon": "⚔", "label": "Arena", "type": "menu", "match": "arena",
+             "door": "/expeditions"},
+            {"id": "t-mil", "icon": "🪖", "label": "Military", "type": "url", "path": "/military"},
+        ])
+        check(await labels() == ["Craftables", "Arena", "Military"], "test menu installed", str(await labels()))
+
+        # Put the fixture back on the realm door so its sub-nav row is showing.
+        await page.evaluate("() => document.querySelector(\"header a[href='/empire']\").click()")
+        await page.wait_for_timeout(250)
+
         # CRAFTABLES is in the current sub-nav, rendered as "🛠 CRAFTABLES ●";
         # the pattern is the bare word, so folding has to do the work.
         await click_entry("Craftables")
@@ -151,6 +245,22 @@ async def main() -> int:
         pending = await page.evaluate("() => sessionStorage.getItem('seneschal.pending.v1')")
         check(pending is None, "the pending click is cleared once it lands", str(pending))
 
+        # Back to the shipped defaults for the rest of the run.
+        await options.evaluate(
+            """async () => {
+                const key = 'seneschal.settings.v1';
+                await chrome.storage.local.remove(key);
+            }"""
+        )
+        await page.bring_to_front()
+        await page.reload(wait_until="load")
+        await page.wait_for_timeout(700)
+        check(
+            await labels() == DEFAULT_MENU,
+            "clearing storage restores the shipped defaults",
+            str(await labels()),
+        )
+
         # --- collapse --------------------------------------------------------
         await page.evaluate(f"() => {DOCK}.querySelector('.dk-tab').click()")
         await page.wait_for_timeout(200)
@@ -159,9 +269,24 @@ async def main() -> int:
             f"() => getComputedStyle({DOCK}.querySelector('.dk-rail .dk-text')).display"
         )
         check(labels_visible == "none", "collapsed rail hides labels but keeps them for screen readers")
+        collapsed_w = await page.evaluate(
+            f"() => {DOCK}.querySelector('.dk-rail').getBoundingClientRect().width"
+        )
         await page.evaluate(f"() => {DOCK}.querySelector('.dk-tab').click()")
         await page.wait_for_timeout(200)
         check("dk-collapsed" not in await wrap_class(), "the tab expands it again")
+
+        # Collapsing must actually NARROW the rail. Hiding the text while
+        # something else (the nowrap siege picker) holds the width open is the
+        # bug this guards — a ratio, so it survives font and padding changes.
+        expanded_w = await page.evaluate(
+            f"() => {DOCK}.querySelector('.dk-rail').getBoundingClientRect().width"
+        )
+        check(
+            collapsed_w < expanded_w * 0.62,
+            "collapsing actually narrows the rail, not just hides text",
+            f"collapsed={collapsed_w:.0f} expanded={expanded_w:.0f}",
+        )
 
         # --- adding a link from the page itself ------------------------------
         await page.evaluate(
@@ -177,9 +302,42 @@ async def main() -> int:
         await page.wait_for_timeout(300)
         check("Ledger" in await labels(), "the new entry appears on the rail", str(await labels()))
 
-        # Back to the realm door, so LEDGER is in the sub-nav row again and the
-        # entry can be served by clicking a live anchor.
-        await click_entry("Realm")
+        # --- the confirmation toast keeps out of the way ---------------------
+        # It used to be nested inside the transformed .dk-wrap, which made it
+        # the wrap's containing block, so "fixed; bottom" planted the toast on
+        # top of the menu. Assert the geometry, not the markup.
+        boxes = await page.evaluate(
+            f"""() => {{
+                const r = {DOCK}.querySelector('.dk-rail').getBoundingClientRect();
+                const t = {DOCK}.querySelector('.dk-toast').getBoundingClientRect();
+                return {{ visible: !{DOCK}.querySelector('.dk-toast').hidden,
+                          overlaps: !(t.right < r.left || t.left > r.right ||
+                                      t.bottom < r.top || t.top > r.bottom),
+                          below: t.top >= r.bottom }};
+            }}"""
+        )
+        check(boxes["visible"], "adding an entry confirms with a toast")
+        check(not boxes["overlaps"], "the toast does not cover the menu", str(boxes))
+
+        # Poll rather than sleep a fixed span: the hero refresh runs two fetches
+        # in the background, and a single timed wait races with them. The point
+        # is that a confirmation clears on its own well before a warning's 7s.
+        cleared_ms = None
+        for elapsed in range(0, 5200, 200):
+            if await page.evaluate(f"() => {DOCK}.querySelector('.dk-toast').hidden"):
+                cleared_ms = elapsed
+                break
+            await page.wait_for_timeout(200)
+        check(
+            cleared_ms is not None and cleared_ms < 5000,
+            "the confirmation toast clears on its own, faster than a warning",
+            f"cleared after {cleared_ms}ms",
+        )
+
+        # Scaffolding, not a behaviour under test: put the fixture back on the
+        # realm door so LEDGER is in the sub-nav row and the new entry can be
+        # served by clicking a live anchor.
+        await page.evaluate("() => document.querySelector(\"header a[href='/empire']\").click()")
         await page.wait_for_timeout(250)
         await click_entry("Ledger")
         await page.wait_for_timeout(250)
@@ -214,11 +372,9 @@ async def main() -> int:
         await page.keyboard.press("Escape")
 
         # --- the options page edits the live dock ----------------------------
-        worker = ctx.service_workers[0] if ctx.service_workers else await ctx.wait_for_event("serviceworker")
-        ext_id = worker.url.split("/")[2]
-        options = await ctx.new_page()
-        await options.goto(f"chrome-extension://{ext_id}/options/options.html", wait_until="load")
-        await options.wait_for_timeout(300)
+        await options.bring_to_front()
+        await options.reload(wait_until="load")
+        await options.wait_for_timeout(400)
 
         rows = await options.locator(".item").count()
         check(rows == len(await labels()), "options page lists the same entries as the rail", f"{rows} rows")
@@ -380,10 +536,16 @@ async def main() -> int:
         await page.wait_for_timeout(2500)
         s = await sheet()
         check(s["open"], "raising a host asks first, and spends nothing yet", str(s))
-        check("Souls=4,120" in s.get("readings", []),
+        check("Souls=3" in s.get("readings", []),
               "the sheet shows the balance it actually read off the page", str(s.get("readings")))
+        check("Raisable dead=284,745" in s.get("readings", []),
+              "and the pool of fallen, which souls cannot substitute for", str(s.get("readings")))
+        check("This rite costs=1 soul + 1 dead" in s.get("readings", []),
+              "and the price at the rate the card itself states", str(s.get("readings")))
+        # The tolerance is 50 and the line under it starts with "60 scouts".
+        # Read through textContent those weld into 5060; this pins the boundary.
         check("Disturbance=12 / 50" in s.get("readings", []),
-              "and the disturbance it read", str(s.get("readings")))
+              "and the disturbance it read, tolerance intact", str(s.get("readings")))
         check("1,000" in s.get("body", ""), "it names the size it is about to raise", s.get("body", ""))
         check(await log() == "navigated:/necromancy",
               "it walked the door and opened the rites panel", f"log={await log()!r}")
@@ -405,19 +567,22 @@ async def main() -> int:
         await page.wait_for_timeout(1500)
         check(await log() == "rite:host:1000",
               "confirming performs the rite at the configured size", f"log={await log()!r}")
-        check(await souls_on_page() == "3,120",
+        # 1,000 ghosts at 1 soul per 1,000 is ONE soul, not a thousand.
+        check(await souls_on_page() == "2",
               "the balance moved by exactly what was approved", await souls_on_page())
-        check(await badge("host-small") == "3.1k",
-              "the rail picks the new balance up", str(await badge("host-small")))
+        # Both currencies on the badge: 2 souls, and the pool one raise lighter
+        # (284,745 - 1). Souls alone would not tell you what you can raise.
+        check(await badge("host-small") == "2💀 285k👻",
+              "the rail shows the new balance and the pool", str(await badge("host-small")))
 
         # --- the destructive case: short, and sacrifice would cover it -------
-        # 4,500 wanted against 3,120 held is 1,380 short: six harvests at the
-        # 240 the button advertises.
+        # 4,500 ghosts is 5 blocks, so 5 souls. Two are held, so it is 3 short:
+        # three harvests at the 1 the button advertises.
         await click_entry("Big host")
         await page.wait_for_timeout(1500)
         s = await sheet()
         check(s["open"], "a shortfall asks first too", str(s))
-        check("6" in s.get("body", "") and "1,380" in s.get("body", ""),
+        check("3" in s.get("body", "") and "Soul-Harvest 3" in s.get("body", ""),
               "the sheet counts the sacrifices and names the shortfall", s.get("body", ""))
         check("living veterans" in s.get("warn", ""),
               "it says out loud what a sacrifice costs", s.get("warn", ""))
@@ -430,9 +595,9 @@ async def main() -> int:
         await page.wait_for_timeout(7000)
         check(await log() == "rite:host:4500",
               "it harvests the shortfall, then raises the full host", f"log={await log()!r}")
-        # 3,120 + 6 x 240 = 4,560, less the 4,500 raised.
-        check(await souls_on_page() == "60",
-              "the arithmetic across six harvests and a raise holds", await souls_on_page())
+        # 2 + 3 x 1 = 5, less the 5 the 4,500 host costs.
+        check(await souls_on_page() == "0",
+              "the arithmetic across three harvests and a raise holds", await souls_on_page())
 
         # --- a rites page it cannot reach fails LOUDLY -----------------------
         # Leave the panel first. Standing ON it, the entry short-circuits and
@@ -550,6 +715,278 @@ async def main() -> int:
         check(
             await page.locator("#seneschal-dock").count() == 1,
             "the dock comes back after a full page load",
+        )
+
+        # --- the hero panel --------------------------------------------------
+        await options.evaluate(
+            """async () => {
+                const key = 'seneschal.settings.v1';
+                await chrome.storage.local.remove(key);
+            }"""
+        )
+        await page.bring_to_front()
+        await page.reload(wait_until="load")
+        await page.wait_for_timeout(1500)  # let /heroes be fetched and parsed
+
+        heroes = await page.evaluate(
+            f"() => [...{DOCK}.querySelectorAll('.dk-hero')].map(r => ({{"
+            "  name: r.querySelector('.dk-hero-name')?.textContent,"
+            "  hp: r.querySelector('.dk-hero-hp')?.textContent }))"
+        )
+        check(len(heroes) == 5, "hero panel lists every hero", str(heroes))
+        check(
+            [h["name"] for h in heroes] == ["Krogdolf", "Krogloff", "Krogsly", "Krogman", "Krogdore"],
+            "heroes are named and ordered as the page has them",
+            str([h["name"] for h in heroes]),
+        )
+        bars = await page.evaluate(
+            f"() => [...{DOCK}.querySelectorAll('.dk-bar-fill')].map(b => b.style.width)"
+        )
+        check(bars[:3] == ["45%", "100%", "24%"], "HP bars are proportional", str(bars))
+        classes = await page.evaluate(
+            f"() => [...{DOCK}.querySelectorAll('.dk-bar-fill')].map(b => b.className)"
+        )
+        check("dk-bad" in classes[2], "a badly hurt hero's bar is coloured for it", str(classes[:3]))
+
+        siege = await page.evaluate(
+            f"() => {{ const b = {DOCK}.querySelector('.dk-siege');"
+            "  return b ? { text: b.textContent, hidden: b.hidden, disabled: b.disabled } : null; }"
+        )
+        # The fixture names three bulwarks but only ONE renders assault
+        # locations. Naming alone used to be read as three active sieges.
+        check(
+            siege is not None and siege["text"] == "Heals from: Ashvale Bulwark",
+            "only the siege you are committed to counts as active",
+            str(siege),
+        )
+
+        # --- heal all ---------------------------------------------------------
+        heal_all = await page.evaluate(
+            f"""() => {{
+                const b = {DOCK}.querySelector('.dk-healall');
+                const q = {DOCK}.querySelector('.dk-quote');
+                return b ? {{ text: b.textContent, title: b.title, quote: q ? q.textContent : null }} : null;
+            }}"""
+        )
+        check(heal_all is not None, "the heal-all control is mirrored from the game", str(heal_all))
+        check(
+            heal_all and "79 HP to mend" in (heal_all["quote"] or ""),
+            "the game's own price quote is shown, not one we computed",
+            str(heal_all),
+        )
+        check(
+            heal_all and "HEAL ALL HEROES" not in (heal_all["quote"] or ""),
+            "the quote excludes the button's own label",
+            str(heal_all),
+        )
+
+        # --- one button per healing method ------------------------------------
+        methods = await page.evaluate(
+            f"""() => {{
+                const rows = [...{DOCK}.querySelectorAll('.dk-hero')];
+                const strips = [...{DOCK}.querySelectorAll('.dk-methods')];
+                return strips.map(s => [...s.querySelectorAll('.dk-method')]
+                    .map(b => ({{ glyph: b.textContent, title: b.title, disabled: b.disabled }})));
+            }}"""
+        )
+        check(len(methods) == 3, "method buttons appear only for wounded heroes", str(len(methods)))
+        titles = [b["title"] for b in methods[0]]
+        check(
+            any("Salveroot Tonic · +10 HP" in t for t in titles)
+            and any("Knitbone Draught · +25 HP" in t for t in titles)
+            and any("Wardenbalm Elixir · +50 HP" in t for t in titles),
+            "every elixir gets its own named button",
+            str(titles),
+        )
+        check(
+            any("brews one for 6 timber + 2 iron" in t for t in titles),
+            "a button you must brew for quotes the brewing cost",
+            str(titles),
+        )
+        check(
+            any("you hold 2" in t for t in titles),
+            "a button you can use now says how many you hold",
+            str(titles),
+        )
+        # Krogman is the lightly wounded one (425/431), so a +50 elixir on him
+        # is plainly more than the wound needs.
+        light = methods[2]
+        by_glyph = {b["glyph"]: b for b in light}
+        check(
+            by_glyph.get("💧", {}).get("disabled") is True,
+            "an elixir with none held and no materials is disabled",
+            str(by_glyph.get("💧")),
+        )
+        check(
+            any("⛑" == b["glyph"] for b in light),
+            "siege provisions get their own button, distinct from the elixirs",
+            str([b["glyph"] for b in light]),
+        )
+        check(
+            "more than this wound needs" in (by_glyph.get("💧", {}).get("title") or ""),
+            "an elixir bigger than the wound says so",
+            str(by_glyph.get("💧", {}).get("title")),
+        )
+
+        # --- a long menu must not push the hero panel off the rail ------------
+        # Twelve links plus a full hero panel outgrow a laptop screen. Scrolling
+        # the rail as one block put the heal buttons and the tools below the
+        # fold — a screenshot caught it, a green suite did not, so it is pinned
+        # here now.
+        await page.set_viewport_size({"width": 1280, "height": 720})
+        await page.wait_for_timeout(200)
+        fit = await page.evaluate(
+            f"""() => {{
+                const rail = {DOCK}.querySelector('.dk-rail');
+                const list = {DOCK}.querySelector('.dk-items');
+                const tools = {DOCK}.querySelector('.dk-tools');
+                const heroes = {DOCK}.querySelector('.dk-heroes');
+                const rites = {DOCK}.querySelector('.dk-rites');
+                const r = rail.getBoundingClientRect();
+                const rr = rites && rites.getBoundingClientRect();
+                return {{
+                    listScrolls: list.scrollHeight > list.clientHeight + 1,
+                    railScrolls: rail.scrollHeight > rail.clientHeight + 1,
+                    toolsInside: tools.getBoundingClientRect().bottom <= r.bottom + 1,
+                    heroesInside: heroes.getBoundingClientRect().top >= r.top - 1,
+                    ritesPresent: Boolean(rites),
+                    ritesVisible: Boolean(rr && rr.top >= r.top - 1 && rr.bottom <= r.bottom + 1
+                                          && rr.top >= 0 && rr.bottom <= innerHeight),
+                    ritesOutsideScroller: Boolean(rites && !list.contains(rites)),
+                    onScreen: r.top >= 0 && r.bottom <= innerHeight,
+                }};
+            }}"""
+        )
+        check(fit["listScrolls"], "the link list is what scrolls when space runs out", str(fit))
+        check(not fit["railScrolls"], "the rail itself never scrolls", str(fit))
+        check(fit["toolsInside"], "add and settings stay reachable on a short screen", str(fit))
+        check(fit["heroesInside"], "the hero panel stays on the rail", str(fit))
+        check(fit["onScreen"], "the rail fits the viewport", str(fit))
+        # The rite carries the soul / raisable-dead reading. In the scroller it
+        # was the LAST row, so it was always the one that scrolled out of sight
+        # — visible in a screenshot, invisible to a green suite.
+        check(fit["ritesPresent"], "the rite renders on the rail", str(fit))
+        check(fit["ritesOutsideScroller"], "the rite is not in the part that scrolls", str(fit))
+        check(fit["ritesVisible"], "so its balance badge is on screen at 720px", str(fit))
+
+        # --- asking happens in our own panel, never in a native dialog --------
+        # Clicking a heal method must ask first. Cancelling it must spend
+        # nothing, which is why this test only ever presses Cancel.
+        await page.evaluate(
+            f"() => {DOCK}.querySelectorAll('.dk-methods')[0].querySelector('.dk-method').click()"
+        )
+        await page.wait_for_timeout(150)
+        ask = await page.evaluate(
+            f"""() => {{
+                const a = {DOCK}.querySelector('.dk-ask');
+                if (!a || a.hidden) return null;
+                return {{
+                    title: a.querySelector('h2').textContent,
+                    body: a.querySelector('.dk-ask-body').textContent,
+                    yes: a.querySelector('.dk-ask-yes').textContent,
+                    role: a.getAttribute('role'),
+                    focused: {DOCK}.activeElement === a.querySelector('.dk-ask-yes'),
+                }};
+            }}"""
+        )
+        check(ask is not None, "a heal asks before it spends", str(ask))
+        check(
+            ask and ask["title"].startswith("Heal Krogdolf"),
+            "the question names the hero it is about to heal",
+            str(ask),
+        )
+        check(
+            ask and "221/489" in ask["body"] and "spends" in ask["body"],
+            "the question quotes the HP and the price",
+            str(ask),
+        )
+        check(ask and ask["role"] == "alertdialog", "the panel announces itself to a screen reader", str(ask))
+        check(ask and ask["focused"], "confirm is focused, so Enter answers it", str(ask))
+
+        # Escape answers no, exactly like the add form.
+        await page.evaluate(
+            f"""() => {DOCK}.querySelector('.dk-ask').dispatchEvent(
+                new KeyboardEvent('keydown', {{ key: 'Escape', bubbles: true }}))"""
+        )
+        await page.wait_for_timeout(100)
+        check(
+            await page.evaluate(f"() => {DOCK}.querySelector('.dk-ask').hidden"),
+            "Escape closes the question without spending",
+        )
+
+        # Heal-all asks with the GAME's costing line, not one we computed.
+        await page.evaluate(f"() => {DOCK}.querySelector('.dk-healall').click()")
+        await page.wait_for_timeout(150)
+        ask_all = await page.evaluate(
+            f"""() => {{
+                const a = {DOCK}.querySelector('.dk-ask');
+                return a.hidden ? null : {{ title: a.querySelector('h2').textContent,
+                                            body: a.querySelector('.dk-ask-body').textContent }};
+            }}"""
+        )
+        check(
+            ask_all and "79 HP to mend" in ask_all["body"],
+            "heal-all quotes the game's own price back before spending",
+            str(ask_all),
+        )
+        await page.evaluate(f"() => {DOCK}.querySelector('.dk-ask-no').click()")
+        await page.wait_for_timeout(100)
+
+        # Opening the add form must not leave a question stranded behind it.
+        await page.evaluate(f"() => {DOCK}.querySelector('.dk-tools .dk-btn').click()")
+        await page.wait_for_timeout(100)
+        check(
+            await page.evaluate(f"() => {DOCK}.querySelector('.dk-ask').hidden"),
+            "opening the add form closes any open question",
+        )
+        await page.evaluate(f"() => {DOCK}.querySelector('.dk-cancel').click()")
+
+        check(not dialogs, "no native alert, confirm or prompt is ever used", "; ".join(dialogs))
+
+        # --- the roster is cached, so navigation never flashes a placeholder --
+        cached = await options.evaluate(
+            """async () => {
+                const o = await chrome.storage.local.get('seneschal.heroes.v1');
+                const c = o['seneschal.heroes.v1'];
+                return c ? { heroes: c.heroes.length, sieges: c.sieges.length, hasAt: !!c.at } : null;
+            }"""
+        )
+        check(cached is not None and cached["heroes"] == 5, "the roster is written to the cache", str(cached))
+
+        # Reload and watch the panel's very first paints. Because every in-game
+        # navigation is a full page load, a placeholder here would be seen on
+        # every page — so it must never appear once something is cached.
+        await page.bring_to_front()
+        await page.reload(wait_until="load")
+        seen = []
+        for _ in range(24):
+            state = await page.evaluate(
+                f"""() => {{
+                    const host = document.getElementById('seneschal-dock');
+                    if (!host) return null;
+                    const box = host.shadowRoot.querySelector('.dk-heroes');
+                    if (!box) return null;
+                    return [...box.querySelectorAll('.dk-hero-name')].map(e => e.textContent).join(',');
+                }}"""
+            )
+            if state:
+                seen.append(state)
+            await page.wait_for_timeout(60)
+        check(
+            bool(seen) and not any("Reading heroes" in s for s in seen),
+            "no placeholder is shown once the roster is cached",
+            str(seen[:3]),
+        )
+        check(
+            bool(seen) and seen[0].startswith("Krogdolf"),
+            "the cached roster paints first",
+            str(seen[:2]),
+        )
+
+        # Switching the palette off must not take the hero panel with it.
+        check(
+            await page.locator("#seneschal-dock").count() == 1,
+            "hero panel lives in the dock host",
         )
 
         check(not errors, "no uncaught page errors", "; ".join(errors))

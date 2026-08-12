@@ -16,11 +16,11 @@ import sys
 import threading
 from pathlib import Path
 
+from chromium_path import CHROMIUM  # noqa: E402
 from playwright.async_api import async_playwright
 
 EXT = Path(__file__).resolve().parents[1]
 FIXTURE = EXT / "test" / "fixture"
-CHROMIUM = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
 
 results: list[tuple[bool, str]] = []
 

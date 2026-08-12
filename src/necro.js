@@ -15,23 +15,31 @@
  *      took the value; clicking harvest checks the balance actually moved.
  *      A click that changes nothing halts the run instead of repeating.
  *
- * WHERE THE VOCABULARY COMES FROM — READ THIS BEFORE TRUSTING IT.
- * The strings matched here were reconstructed from a capture of the rites
- * panel taken 2026-07-01, when it still lived on /expeditions:
+ * WHERE THE VOCABULARY COMES FROM.
+ * MEASURED against the live panel on 2026-08-11, at
+ * /expeditions/buildings/necromancy (CHAMPIONS row, not Realm):
+ *
+ *     [ THE SOULS OF THE REALM ]              HAUNTED
+ *     💀 0 souls (catalyst — from veteran sacrifice)
+ *     👻 284,745 raisable dead (your fallen)   Disturbance 100/65
+ *     60 scouts lost to the dark · 586,745 soldiers fallen on raids.
  *
  *     [ RITES OF REMEMBRANCE ]
- *     ⚰️ WAR CEMETERY
- *     💀 4,120 souls · Disturbance 12/50
- *     👻 Spectral Host · +6 disturb
- *     💀 Soul-Harvest · +4 disturb
- *     🕯️ Rite of Honor · -8 disturb
- *     PERFORM · +240 SOULS
+ *     👻 Spectral Host · 0 disturb
+ *       Raise a horde from your fallen. Costs 1 dead + 1 soul per 1,000
+ *       raised. No cap; the pool drains as you raise.
+ *       [ 30000 ]  RAISE 0 · 0👻 + 0💀        (disabled at 0 souls)
+ *     💀 Soul-Harvest · 0 disturb              Sacrifice · +1 💀
+ *     🕯️ Rite of Honor · -10 disturb          Perform · 4,000g
+ *     ⛪ Reconsecration · -40 disturb
  *
- * v1.96 moved the panel to REALM › NECROMANCY. Nobody has since captured its
- * DOM, so the SHAPE below (a card per rite, a number field, a PERFORM button)
- * is inferred, not measured. `tools/harvest-necromancy.js` is what turns it
- * into fact — run it before relying on any of this. Until then the refusals
- * above are load-bearing, not defensive padding.
+ * The SHAPE that was inferred before that (a card per rite, a number field, a
+ * perform button) turned out to hold. The PRICES did not: an earlier draft
+ * read one soul per ghost, which is wrong by a factor of a thousand. Hence
+ * parseHostRate — the rate is read off the card and never assumed.
+ *
+ * `tools/harvest-necromancy.js` re-measures all of this. It reads only. Run it
+ * whenever the game moves the panel again, which it will.
  */
 (function () {
   "use strict";
@@ -101,6 +109,49 @@
   // --- reading the panel ----------------------------------------------------
 
   /**
+   * One rendered number, and no more than one.
+   *
+   * A digit run, optionally split into thousands groups by any separator this
+   * UI has been seen to use — comma, period, space, no-break space, narrow
+   * no-break space. Deliberately NOT `[0-9][0-9,. ]*`: that class can end on a
+   * separator and then swallow whatever number follows, which is exactly how
+   * "Disturbance 100/65" above a line beginning "60 scouts lost" once parsed
+   * as a tolerance of 6560. See parseBalance.
+   */
+  const NUMBER = "[0-9]+(?:[,.\\u00a0\\u202f ][0-9]{3})*";
+
+  /**
+   * The page's text with its element boundaries preserved as newlines.
+   *
+   * `textContent` concatenates straight across elements, welding the end of
+   * one number onto the start of the next; `innerText` keeps the breaks but
+   * forces a synchronous reflow, and this runs on a poll (CLAUDE.md finding
+   * 6). So walk the nodes and put the boundaries back by hand: no layout, no
+   * welding.
+   *
+   * Skips our own subtree, so the rail's soul badge can never be read back in
+   * as though it were the game's own balance.
+   */
+  function blockText(root) {
+    if (!root) return "";
+    let out = "";
+    const walk = (node) => {
+      for (let child = node.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType === 3) {
+          out += child.nodeValue;
+        } else if (child.nodeType === 1) {
+          if (SEN.scanner && SEN.scanner.isOurs(child)) continue;
+          out += "\n";
+          walk(child);
+          out += "\n";
+        }
+      }
+    };
+    walk(root);
+    return out;
+  }
+
+  /**
    * Pull the soul balance out of rendered page text.
    *
    * Requires a DIGIT immediately before the word, so the rite blurbs ("Call
@@ -108,19 +159,34 @@
    * balance. Disturbance is optional: it is a warning input, not a gate, and
    * a panel redesign that drops it should not block raising a host.
    *
-   * @returns {{souls:number, disturbance:number|null, tolerance:number|null}|null}
+   * PASS TEXT THAT KEEPS ITS ELEMENT BOUNDARIES — `blockText()`, not raw
+   * `textContent`. On the live panel the tolerance and the line beneath it are
+   * adjacent elements, so `textContent` renders them as one run:
+   * "Disturbance 100/6560 scouts lost to the dark". No regex recovers 65 from
+   * that; the boundary has to survive the read. Getting this wrong is silent,
+   * and it disarms the one warning guarding an irreversible spend.
+   *
+   * @returns {{souls:number, dead:number|null, disturbance:number|null,
+   *   tolerance:number|null}|null}
    */
   function parseBalance(text) {
     const s = String(text == null ? "" : text);
 
-    const souls = /([0-9][0-9,.   ]*)\s*souls?\b/i.exec(s);
+    const souls = new RegExp(`(${NUMBER})\\s*souls?\\b`, "i").exec(s);
     if (!souls) return null;
     const count = toInt(souls[1]);
     if (count == null) return null;
 
-    const disturb = /disturbance[^0-9]{0,4}([0-9][0-9,.   ]*)\s*\/\s*([0-9][0-9,.   ]*)/i.exec(s);
+    const disturb = new RegExp(
+      `disturbance[^0-9]{0,4}(${NUMBER})\\s*\\/\\s*(${NUMBER})`,
+      "i"
+    ).exec(s);
     return {
       souls: count,
+      // The pool a host is actually raised FROM. Carried on the same reading
+      // because the two numbers are only meaningful together — souls alone
+      // will happily describe a host the fallen cannot fill.
+      dead: parseRaisableDead(s),
       disturbance: disturb ? toInt(disturb[1]) : null,
       tolerance: disturb ? toInt(disturb[2]) : null,
     };
@@ -148,6 +214,60 @@
     return m[1] === "+" ? n : -n;
   }
 
+  /**
+   * What one raise actually costs, read off the rite's own description.
+   *
+   * Measured live 2026-08-11, the Spectral Host card says:
+   *
+   *     Costs 1 dead + 1 soul per 1,000 raised. No cap; the pool drains as
+   *     you raise. Bigger = more disturbance.
+   *
+   * This is NOT one soul per ghost, which is what an earlier draft assumed —
+   * an assumption that overstated the price of a 10,000 host by a factor of a
+   * thousand and would have offered to sacrifice veterans to cover a shortfall
+   * that does not exist. So the rate is READ, never assumed, and a card that
+   * does not state one makes the whole rite refuse.
+   *
+   * @returns {{souls:number, dead:number, per:number}|null}
+   */
+  function parseHostRate(text) {
+    const m = new RegExp(
+      `costs?\\s*(${NUMBER})\\s*dead\\s*(?:\\+|and|,)\\s*(${NUMBER})\\s*souls?\\s*per\\s*(${NUMBER})\\s*raised`,
+      "i"
+    ).exec(String(text || ""));
+    if (!m) return null;
+    const dead = toInt(m[1]);
+    const souls = toInt(m[2]);
+    const per = toInt(m[3]);
+    if (!per || per <= 0) return null;
+    if (dead == null || souls == null) return null;
+    return { souls, dead, per };
+  }
+
+  /** The pool a host is raised from: "👻 284,745 raisable dead (your fallen)". */
+  function parseRaisableDead(text) {
+    const m = new RegExp(`(${NUMBER})\\s*raisable\\s*dead`, "i").exec(String(text || ""));
+    return m ? toInt(m[1]) : null;
+  }
+
+  /**
+   * What raising `want` ghosts costs at `rate`.
+   *
+   * The rate is quoted per block ("per 1,000 raised"), and a partial block
+   * still costs a whole one, so this rounds UP. Quoting a price that rounds
+   * down would understate what the click is about to spend.
+   */
+  function costOf(want, rate) {
+    const blocks = Math.ceil(want / rate.per);
+    return { souls: blocks * rate.souls, dead: blocks * rate.dead, blocks };
+  }
+
+  /** The largest host `souls` covers at `rate` — the non-destructive offer. */
+  function affordable(souls, rate) {
+    if (!rate.souls) return 0;
+    return Math.floor(souls / rate.souls) * rate.per;
+  }
+
   // --- planning -------------------------------------------------------------
 
   /**
@@ -156,12 +276,16 @@
    * Pure: no DOM, no clicking. The dock renders this straight into the
    * confirmation modal, so the user approves the same object that then runs.
    *
+   * `rate` is REQUIRED and comes from parseHostRate — no rate, no plan. That
+   * is the whole lesson of the 1000x error: the one number that converts a
+   * host size into a price is the one number never to assume.
+   *
    * @returns {{kind:"raise"|"harvest"|"blocked", ...}} `kind` is the decision:
    *   raise    — enough souls in hand, one click
    *   harvest  — short, and sacrificing can cover it (DESTRUCTIVE)
    *   blocked  — short, and we cannot or should not cover it
    */
-  function plan({ have, want, perHarvest = null, disturbance = null, tolerance = null, harvestDisturb = null, raiseDisturb = null }) {
+  function plan({ have, want, rate = null, deadHave = null, perHarvest = null, disturbance = null, tolerance = null, harvestDisturb = null, raiseDisturb = null }) {
     const target = clampSouls(want);
     const held = Math.max(0, Number(have) || 0);
 
@@ -175,6 +299,8 @@
         ...p,
         have: held,
         want: target,
+        rate,
+        deadHave,
         disturbance,
         tolerance,
         disturbanceAfter: after,
@@ -184,11 +310,47 @@
       };
     };
 
-    if (held >= target) {
-      return finish({ kind: "raise", raise: target, harvests: 0, remaining: held - target });
+    // No rate means we cannot price the click at all. Refuse before anything
+    // else: every branch below is arithmetic on a number we would be inventing.
+    if (!rate || !rate.per) {
+      return finish({ kind: "blocked", harvests: 0, reason: "unknown-rate", canRaiseInstead: 0 });
     }
 
-    const shortfall = target - held;
+    const cost = costOf(target, rate);
+    // The pool is finite and the rite drains it. Cap the offer at what the
+    // fallen actually cover rather than letting the click fail at the server.
+    const affordableByDead =
+      deadHave == null || !rate.dead
+        ? null
+        : Math.floor(deadHave / rate.dead) * rate.per;
+    if (affordableByDead != null && cost.dead > deadHave) {
+      return finish({
+        kind: "blocked",
+        harvests: 0,
+        reason: "not-enough-dead",
+        cost,
+        canRaiseInstead: Math.min(affordable(held, rate), affordableByDead),
+      });
+    }
+
+    // Everything below is denominated in SOULS: the dead cost rides along at a
+    // fixed ratio and cannot be topped up by sacrificing.
+    const bestInstead = () => {
+      const bySouls = affordable(held, rate);
+      return affordableByDead == null ? bySouls : Math.min(bySouls, affordableByDead);
+    };
+
+    if (held >= cost.souls) {
+      return finish({
+        kind: "raise",
+        raise: target,
+        harvests: 0,
+        cost,
+        remaining: held - cost.souls,
+      });
+    }
+
+    const shortfall = cost.souls - held;
     if (!perHarvest || perHarvest <= 0) {
       // Either there is no harvest rite on the page or its button does not say
       // what it yields. Guessing a yield would mean clicking a sacrifice an
@@ -197,8 +359,9 @@
         kind: "blocked",
         shortfall,
         harvests: 0,
+        cost,
         reason: perHarvest === 0 || perHarvest === null ? "no-harvest" : "unknown-yield",
-        canRaiseInstead: held > 0 ? held : 0,
+        canRaiseInstead: bestInstead(),
       });
     }
 
@@ -208,9 +371,10 @@
         kind: "blocked",
         shortfall,
         harvests,
+        cost,
         reason: "too-many-harvests",
         perHarvest,
-        canRaiseInstead: held > 0 ? held : 0,
+        canRaiseInstead: bestInstead(),
       });
     }
 
@@ -220,35 +384,47 @@
       shortfall,
       harvests,
       perHarvest,
+      cost,
       projected: held + harvests * perHarvest,
-      remaining: held + harvests * perHarvest - target,
+      remaining: held + harvests * perHarvest - cost.souls,
       // There is always a non-destructive alternative when we hold anything at
       // all: raise the host the souls already cover. Offering it beside the
       // sacrifice is the difference between a choice and an ultimatum.
-      canRaiseInstead: held > 0 ? held : 0,
+      canRaiseInstead: bestInstead(),
     });
+  }
+
+  /** The rite's price, in the game's own terms. */
+  function priceOf(p) {
+    return `${formatCount(p.cost.souls)} soul${p.cost.souls === 1 ? "" : "s"} + ${formatCount(p.cost.dead)} dead`;
   }
 
   /** One line of plain English for the modal — the sentence the user approves. */
   function describe(p) {
     if (!p) return "";
+    if (p.reason === "unknown-rate") {
+      return "The Spectral Host rite does not say what it costs per ghost raised, so there is no way to price this. Nothing will be clicked.";
+    }
     if (p.kind === "raise") {
-      return `Raise ${formatCount(p.raise)} ghosts for ${formatCount(p.raise)} souls, leaving ${formatCount(p.remaining)}.`;
+      return `Raise ${formatCount(p.raise)} ghosts for ${priceOf(p)}, leaving ${formatCount(p.remaining)} souls.`;
+    }
+    if (p.reason === "not-enough-dead") {
+      return `Raising ${formatCount(p.want)} needs ${formatCount(p.cost.dead)} of your fallen and you have ${formatCount(p.deadHave)}. The pool is the limit here, and no sacrifice refills it.`;
     }
     if (p.kind === "harvest") {
       return (
-        `You hold ${formatCount(p.have)} souls — ${formatCount(p.shortfall)} short. ` +
-        `Soul-Harvest ${p.harvests}× (about ${formatCount(p.perHarvest)} souls each, paid in living veterans), ` +
-        `then raise ${formatCount(p.raise)}.`
+        `Raising ${formatCount(p.raise)} costs ${priceOf(p)}. You hold ${formatCount(p.have)} souls — ` +
+        `${formatCount(p.shortfall)} short. Soul-Harvest ${p.harvests}× ` +
+        `(about ${formatCount(p.perHarvest)} souls each, paid in living veterans), then raise.`
       );
     }
     if (p.reason === "too-many-harvests") {
-      return `You hold ${formatCount(p.have)} souls. Covering ${formatCount(p.shortfall)} more would take ${formatCount(p.harvests)} sacrifices — past the ${MAX_HARVESTS} this will do in one go.`;
+      return `Raising ${formatCount(p.want)} costs ${priceOf(p)}. You hold ${formatCount(p.have)} souls; covering ${formatCount(p.shortfall)} more would take ${formatCount(p.harvests)} sacrifices — past the ${MAX_HARVESTS} this will do in one go.`;
     }
     if (p.reason === "unknown-yield") {
-      return `You hold ${formatCount(p.have)} souls — ${formatCount(p.shortfall)} short. The Soul-Harvest button does not say how many souls it yields, so this will not click it blind.`;
+      return `Raising ${formatCount(p.want)} costs ${priceOf(p)}. You hold ${formatCount(p.have)} souls — ${formatCount(p.shortfall)} short. The Soul-Harvest button does not say how many souls it yields, so this will not click it blind.`;
     }
-    return `You hold ${formatCount(p.have)} souls — ${formatCount(p.shortfall)} short, and there is no Soul-Harvest rite on this page.`;
+    return `Raising ${formatCount(p.want)} costs ${priceOf(p)}. You hold ${formatCount(p.have)} souls — ${formatCount(p.shortfall)} short, and there is no Soul-Harvest rite on this page.`;
   }
 
   // --- finding things on the page -------------------------------------------
@@ -316,6 +492,22 @@
     return card.buttons.length === 1 ? card.buttons[0] : null;
   }
 
+  /**
+   * Is this control refusing to be clicked?
+   *
+   * A disabled rite button is the game having already decided the rite cannot
+   * be performed — insufficient souls, an empty pool, a cooldown. Clicking it
+   * does nothing, which then surfaces as "the balance did not move" and reads
+   * like our bug rather than its answer. Measured live: with 0 souls the host
+   * button renders `RAISE 0 · 0👻 + 0💀` and carries `disabled`.
+   */
+  function isBlocked(el) {
+    if (!el) return true;
+    if (el.disabled) return true;
+    if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
+    return false;
+  }
+
   /** The number field for the host size, if the card has one. */
   function sizeInput(card) {
     if (!card) return null;
@@ -366,9 +558,11 @@
   function readBalance(doc = document) {
     const body = doc && doc.body;
     if (!body) return null;
-    const text = body.textContent || "";
-    if (text.indexOf("soul") === -1 && text.indexOf("Soul") === -1) return null;
-    return parseBalance(text);
+    // Cheap native test first: the node walk below is only worth paying for on
+    // a page that plausibly carries a balance at all.
+    const flat = body.textContent || "";
+    if (flat.indexOf("soul") === -1 && flat.indexOf("Soul") === -1) return null;
+    return parseBalance(blockText(body));
   }
 
   SEN.necro = {
@@ -378,13 +572,20 @@
     formatCount,
     formatShort,
     formatAge,
+    blockText,
     parseBalance,
     parseSoulDelta,
     parseDisturbDelta,
+    parseHostRate,
+    parseRaisableDead,
+    costOf,
+    affordable,
     plan,
+    priceOf,
     describe,
     findRiteCard,
     performButton,
+    isBlocked,
     sizeInput,
     setNumber,
     readBalance,

@@ -2,7 +2,8 @@
  * harvest-necromancy.js — recon for the Rites of Remembrance panel.
  *
  * Paste into the DevTools console **while the rites panel is on screen**
- * (REALM › NECROMANCY as of v1.96) and hand the output back.
+ * (CHAMPIONS › ⚰ NECROMANCY, i.e. /expeditions/buildings/necromancy as of
+ * 2026-08-11) and hand the output back.
  *
  * WHY THIS EXISTS
  * The extension's "Raise host" button drives a rite that SPENDS souls, and
@@ -72,7 +73,7 @@
       "color:#d9a441;font-weight:bold"
     );
     console.log(
-      "Looked for a number followed by the word 'souls'. Open REALM > NECROMANCY (or wherever the rites live now) and re-run."
+      "Looked for a number followed by the word 'souls'. Open /expeditions/buildings/necromancy (or wherever the rites live now) and re-run."
     );
     return;
   }

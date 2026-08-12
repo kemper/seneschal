@@ -78,7 +78,12 @@ So the index draws on three sources, most-trusted first:
 1. **Live scan** of the header right now (`src/scanner.js`).
 2. **Learned entries** — every nav item ever seen in a header, persisted to
    `chrome.storage.local`. Browsing naturally teaches it the whole tree.
-3. **Seed catalog** (`src/catalog.js`) so it is useful on a fresh install.
+3. **Seed catalog** (`src/catalog.js`) — all 35 live destinations, harvested
+   from the site itself, so it is complete on a fresh install.
+
+How contextual is contextual? Measured across all 19 reachable nav pages: of
+35 distinct entries, exactly **six** are on every page. The rest are 8/19, 5/19,
+or lower.
 
 **With an empty query the list is your history** — everything you have jumped
 to before, most recent first, under a `Recent` heading, with everything else
@@ -140,10 +145,25 @@ Entries come in three kinds, and the last two are the interesting ones:
 | **Raise host** | `10000` souls | Reaches the rites panel the way a menu entry does, reads the balance, and asks before spending anything. [See below.](#raising-a-spectral-host) |
 
 The second kind exists because the game's sub-navigation is contextual:
-`CRAFTABLES`, `ARENA` and `🐗 HUNT` have no address you can usefully link to
-from elsewhere — the honest description of the journey is "go to
-`/expeditions`, then click the thing called ARENA", and that is what the entry
-stores.
+`CRAFTABLES`, `ARENA` and `🐗 HUNT` are simply **not on the page** unless you
+are already inside their parent door. The honest description of the journey is
+"go to `/expeditions`, then click the thing called ARENA", and that is what the
+entry stores.
+
+**Prefer a path when you know it.** Most of these destinations do have a URL —
+a *Menu entry* is not a claim that one does not exist. Since the harvest, every
+entry in `src/catalog.js` has a real path, and the default quick menu is
+entirely path entries. A *Menu entry* is the right choice in four narrower
+cases:
+
+- **The URL is not known yet**, for something the harvester has not reached.
+- **The route misbehaves on a hard load,** as `/buildings` is reported to.
+  (Second-hand and unverified — but clicking through costs nothing.)
+- **The control genuinely has no href.** A dropdown toggle like the user menu
+  is a `<button>`; there is no address to go to, and a pattern is the only way
+  to put it on the rail.
+- **You would rather pin the name than the address,** because you expect the
+  URL to move and the label to stay.
 
 A pattern is matched with case, spacing, emoji and the trailing `●` folded
 away, so `craftables` matches `🛠 CRAFTABLES ●`. Wrap it in slashes
@@ -175,11 +195,30 @@ anything is clicked:
   smaller host your souls already cover. The destructive one is the red one.
 - **Can't tell** — it refuses and says why.
 
+**The price comes off the card, never from an assumption.** The Spectral Host
+rite states its own rate — *"Costs 1 dead + 1 soul per 1,000 raised"* — and
+that sentence is parsed. A card that does not state a rate makes the whole rite
+refuse, because the alternative is inventing the one number that converts a
+host size into a bill. An earlier build assumed one soul per ghost, which
+overpriced a 10,000 host by a factor of a thousand and would have offered to
+sacrifice veterans to cover a shortfall that did not exist.
+
+Two currencies, and they are **not** interchangeable: souls can be harvested,
+the fallen cannot. A host bigger than the pool is blocked outright rather than
+offered as something to sacrifice towards, and the sheet shows both numbers so
+"souls" never stands in for the whole price.
+
 The size lives on the entry, so the ⚙ editor can change it, and you can keep
 several at different sizes. Default 10,000.
 
-The rail shows your last soul reading as a badge. There is no API for it, and
-the number only renders on the rites panel, so it is a **cache** — the tooltip
+The rail shows the last reading as a badge — `3💀 285k👻`, souls and raisable
+dead. Both, because neither alone tells you what you can raise: souls are the
+catalyst and the fallen are the pool, and no amount of sacrificing turns one
+into the other. The rite sits **outside** the scrolling link list for this
+reason; a number you have to scroll to find is a number you will not look at.
+
+There is no API for it, and the
+number only renders on the rites panel, so it is a **cache** — the tooltip
 gives its age and the badge greys out after an hour. It refreshes whenever the
 panel is on screen, and immediately after a rite.
 
@@ -198,15 +237,25 @@ number it has not read:
   click that changes nothing and tells you how many sacrifices were already
   made — the difference between "the yield was smaller than advertised" and
   "we are clicking the wrong button forty times".
+- Click a control the game has **disabled**. That is the game's own refusal —
+  no souls, an empty pool, a cooldown — and it gets reported as such rather
+  than clicked into a no-op and blamed on the balance not moving.
 
-> ⚠️ **The panel's shape here is inferred, not measured.** The wording comes
-> from a capture of the live rites panel taken 2026-07-01, when it still lived
-> on `/expeditions`; the *structure* around it — a card per rite, a number
-> field, a PERFORM button — is a reconstruction. Run
-> `tools/harvest-necromancy.js` in DevTools with the panel open and hand back
-> what it prints, and the guess becomes a measurement. It reads only; it clicks
-> nothing. Until then the refusals above are load-bearing rather than
-> defensive padding: if reality differs, you get a warning, not a surprise.
+> **Measured against the live panel on 2026-08-11.** The structure this was
+> originally built on — a card per rite, a number field, a perform button — held
+> up. The *prices* did not, and neither did the route: the rites are at
+> `/expeditions/buildings/necromancy`, in the **Champions** row, not under
+> Realm where an earlier default sent them.
+>
+> Re-run `tools/harvest-necromancy.js` in DevTools whenever the game moves the
+> panel again, which it will. It reads only; it clicks nothing.
+
+> ⚠️ **The sacrifice path cannot currently run against the live game, on
+> purpose.** The real Soul-Harvest button reads `Sacrifice · +1 💀` — the
+> currency is a glyph, not the word "souls" — so the yield does not parse, the
+> plan comes back blocked, and no veteran is ever sacrificed. Teaching the
+> parser that glyph would arm the only irreversible action here, so it is a
+> decision to take deliberately rather than a gap to close quietly.
 
 ## Layout
 
@@ -249,40 +298,99 @@ Settings live in one object under `seneschal.settings.v1` in
 `chrome.storage.local`; both surfaces watch `chrome.storage.onChanged`, so a
 toggle or an edit lands in every open tab without a reload.
 
+## The hero panel
+
+Under the quick menu: every hero's class, name, level and HP, with a bar that
+colours as it drops. Read from `/heroes` with a single GET and parsed out of
+the server-rendered HTML, so it works on any page and mutates nothing.
+
+**Heal all** mirrors the game's own `[ 💚 HEAL ALL HEROES ]`, which brews the
+draughts it needs and prices the job itself — the panel shows that quote
+verbatim (`1 wounded · 79 HP to mend · brews 4 draughts: 48 timber · 24 iron`)
+rather than recomputing it, so the number you confirm is the game's own.
+
+Under each wounded hero sits **one button per healing method** — siege
+provisions, and one for each elixir — because a single "heal" button has to
+choose for you, and choosing badly is expensive. (It once spent a Wardenbalm,
++50 HP and the scarcest of them, closing a 79 HP wound.)
+
+Every button says what it is on hover: `Knitbone Draught · +25 HP · you hold 2`,
+or `Salveroot Tonic · +10 HP · none held — brews one for 6 timber + 2 iron`, and
+flags an elixir that is `more than this wound needs`. One with nothing held and
+no materials to brew is disabled. The confirm repeats the price, including the
+brewing cost when one has to be made first.
+Pressing it asks first, then drives the game's own button — in a hidden
+same-origin iframe, so it works from anywhere without navigating you to the
+siege page.
+
+That indirection is deliberate. There is no heal API: the game does its writes
+through Next.js Server Actions, and the button's handler exposes no callable
+reference, so a synthesised request would mean reverse-engineering a payload
+keyed on a build hash that changes with every deploy. Clicking the real button
+needs none of that. Measured: loading the siege page and selecting a location
+issues **33 requests, all GET, and writes nothing to localStorage** — only the
+heal click itself mutates anything.
+
+Afterwards it **re-reads `/heroes` and checks the HP actually moved**, and says
+so loudly if it did not, rather than reporting success because a click didn't
+throw. When more than one siege is active, a small control picks which one the
+heals draw from.
+
 ## Refreshing the destination list
 
-`src/catalog.js` was written from captured page text, not from the live site, so
-several entries have **no path at all** and a couple are inferred. Fix that in
-about ten seconds:
+`src/catalog.js` was harvested from the live site on 2026-08-08 and verified
+against it with a zero diff. To refresh after a patch reshuffles the nav:
 
 1. Open wardenfall.com and log in.
 2. Paste `tools/harvest-nav.js` into the DevTools console.
 3. Paste what it prints over the array in `src/catalog.js`.
 
-It clicks each nav link, waits for the row to re-render, records what appeared,
-and puts you back where you started. Navigation only — it never triggers a game
-action, spends a turn, or submits a form. It refuses to run if a modal is open,
-because a full-screen overlay swallows every click and would otherwise produce
-a misleadingly short list.
+It **fetches** each nav page and parses the HTML — it does not click. The game
+server-renders its navigation, your session cookie rides along automatically,
+and nothing on your screen changes. That is not a stylistic choice: clicking
+triggers a real navigation, which destroys the console's execution context and
+kills the script mid-walk. The click walk is still there as a fallback if the
+game ever moves to client-side rendering.
 
-Re-run it whenever a patch reshuffles the nav. This is the deliberate trade: a
-manual refresh every month or so, instead of runtime machinery that tries to
-keep up on its own.
+GET requests to navigation URLs only. It never posts, submits a form, triggers
+a game action, or spends a turn. It also **diffs against the shipped catalog**
+and reports "n gone, n new, n moved" rather than making you eyeball a
+regenerate.
+
+### What the first harvest found
+
+The pre-harvest catalog had been written from captured page text, and four of
+its paths were invented — `/buildings`, `/lore`, `/inventory` and `/craftables`
+all return **404**. The real ones are not guessable from the label:
+
+| Entry | Guessed | Actually |
+| --- | --- | --- |
+| Lore | `/lore` | `/quests` |
+| Inventory | `/inventory` | `/expeditions/inventory` |
+| Buildings | `/buildings` | `/expeditions/buildings` |
+| Craftables | `/craftables` | `/expeditions/buildings/craftables` |
+| Sieges | — | `/conquest` |
+
+This also retired a piece of folklore: `/buildings` was said to "render
+near-empty on a hard load", which was taken as evidence the SPA needed clicking
+through. It was a 404 page. **Never infer a path from a label.**
 
 ## Tests
 
 ```bash
 node --test test/fuzzy.test.mjs     # 12 matcher unit tests
 node --test test/learned.test.mjs   # 11 retention-policy unit tests
-node --test test/config.test.mjs    # 26 settings-model unit tests
+node --test test/config.test.mjs    # 43 settings-model unit tests
+node --test test/heroes.test.mjs    # 14 hero, siege and heal-all parsers
 node --test test/pending.test.mjs   # 11 pending-state unit tests
-node --test test/necro.test.mjs     # 28 rites parsing / planning unit tests
+node --test test/necro.test.mjs     # 44 rites parsing / planning unit tests
 python3 test/e2e.py                 # 26 checks, real extension in Chromium
-python3 test/dock.py                # 74 checks, the quick menu end to end
+python3 test/dock.py                # 114 checks, quick menu + hero panel + rites
 python3 test/harvest.py             # 15 checks, the nav harvester
 ```
 
-All 203 pass.
+All 290 pass. The Python tests need Playwright; `test/chromium_path.py` locates
+a Chromium on either Linux or macOS, overridable with `SENESCHAL_CHROMIUM`.
 
 `e2e.py` serves a mock Wardenfall shell (`test/fixture/index.html`), loads the
 unpacked extension with `--load-extension`, and drives it exactly as a user

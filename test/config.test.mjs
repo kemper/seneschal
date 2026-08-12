@@ -222,11 +222,242 @@ test("a saved config round-trips through JSON unchanged", () => {
   assert.equal(JSON.stringify(second), JSON.stringify(first));
 });
 
-test("the default menu is itself valid, and exercises both entry kinds", () => {
+test("every default entry is valid", () => {
+  // Deliberately does NOT assert which KINDS the defaults use. They were all
+  // `menu` patterns until the nav harvest found real paths, and pinning the
+  // mix here would make a data improvement look like a test failure. Both
+  // kinds are covered by the validateItem tests above.
   const { items } = CFG.defaults().dock;
   for (const item of items) {
     assert.equal(CFG.validateItem(item).ok, true, `default entry ${item.label} is invalid`);
   }
-  assert.ok(items.some((i) => i.type === "url"));
-  assert.ok(items.some((i) => i.type === "menu" && i.door));
+  assert.ok(items.length > 0);
+});
+
+test("the default paths are the harvested ones, not the guessable ones", () => {
+  // /buildings, /lore, /inventory and /craftables were all invented by the
+  // pre-harvest catalog and all return 404 on the live site. If someone
+  // "tidies" a path back to its obvious-looking form, this fails.
+  const byLabel = Object.fromEntries(CFG.defaults().dock.items.map((i) => [i.label, i.path]));
+  assert.equal(byLabel.Sieges, "/conquest", "Sieges is /conquest, not /sieges");
+  assert.equal(byLabel.Craftables, "/expeditions/buildings/craftables");
+  assert.equal(byLabel.Champions, "/heroes");
+});
+
+// --- repairing entries an earlier build got wrong ---------------------------
+
+test("a stored legacy menu seed is rewritten to its harvested path", () => {
+  // This is the bug the user hit: pressing Craftables walked to /empire, which
+  // does not carry that label, and then correctly announced it could not find
+  // a menu entry called "craftables".
+  const stored = {
+    dock: {
+      items: [{ id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/empire" }],
+    },
+  };
+  const { config, problems } = CFG.normalize(stored);
+  const item = config.dock.items[0];
+  // Arrays out of the vm sandbox are cross-realm, so compare the length.
+  assert.equal(problems.length, 0, problems.join(" · "));
+  assert.equal(item.type, "url");
+  assert.equal(item.path, "/expeditions/buildings/craftables");
+  assert.equal(item.match, undefined, "the dead pattern is gone, not carried alongside a path");
+  assert.equal(item.door, undefined);
+  assert.equal(item.label, "Craftables", "the label the user sees is untouched");
+});
+
+test("a legacy seed pointing at a 404 path is repaired too", () => {
+  // /inventory does not exist; the real route is /expeditions/inventory.
+  const { config } = CFG.normalize({
+    dock: { items: [{ id: "seed-inventory", icon: "🎒", label: "Inventory", type: "url", path: "/inventory" }] },
+  });
+  assert.equal(config.dock.items[0].path, "/expeditions/inventory");
+});
+
+test("an edited legacy seed is left alone", () => {
+  // A stored config is the user's. Only entries still identical to what we
+  // shipped get rewritten; change any part of it and it is yours.
+  const mine = { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/expeditions/buildings" };
+  const { config } = CFG.normalize({ dock: { items: [mine] } });
+  const item = config.dock.items[0];
+  assert.equal(item.type, "menu");
+  assert.equal(item.door, "/expeditions/buildings");
+});
+
+test("migration leaves entries it does not recognise untouched", () => {
+  const mine = { id: "it-abc123", label: "My page", type: "menu", match: "craftables", door: "/empire" };
+  assert.equal(CFG.migrateItem(mine), mine);
+});
+
+test("every legacy repair lands on a path the catalog knows", () => {
+  // Guards against repairing one invented path into another. Each target must
+  // be a real harvested route.
+  const known = new Set([
+    "/expeditions/buildings",
+    "/expeditions/buildings/craftables",
+    "/expeditions/inventory",
+    "/arena",
+    "/hunt",
+  ]);
+  for (const id of ["seed-buildings", "seed-craftables", "seed-arena", "seed-hunt", "seed-inventory"]) {
+    const legacy = {
+      "seed-buildings": { type: "menu", match: "buildings", door: "/empire" },
+      "seed-craftables": { type: "menu", match: "craftables", door: "/empire" },
+      "seed-arena": { type: "menu", match: "arena", door: "/expeditions" },
+      "seed-hunt": { type: "menu", match: "hunt", door: "/expeditions" },
+      "seed-inventory": { type: "url", path: "/inventory" },
+    }[id];
+    const out = CFG.migrateItem({ id, label: id, ...legacy });
+    assert.equal(out.type, "url", `${id} should end up as a url entry`);
+    assert.ok(known.has(out.path), `${id} migrated to unknown path ${out.path}`);
+  }
+});
+
+// --- keeping a menu we shipped current --------------------------------------
+
+test("the default menu is the requested one, in the requested order", () => {
+  const labels = CFG.defaults().dock.items.map((i) => i.label);
+  assert.deepEqual(
+    [...labels],
+    ["Realm", "Champions", "Raids", "Sieges", "Arena", "Craftables",
+     "Spellbook", "Military", "Market", "Holds", "Stable", "Raise host"]
+  );
+});
+
+test("an untouched shipped menu is brought up to the current default", () => {
+  // The whole point: a default only reaches a FRESH install, so without this a
+  // menu change is invisible to everyone already running the extension.
+  const oldMenu = [
+    { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
+    { id: "seed-raids", icon: "🏴", label: "Raids", type: "url", path: "/expeditions" },
+    { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "url", path: "/conquest" },
+    { id: "seed-arena", icon: "⚔️", label: "Arena", type: "url", path: "/arena" },
+    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+    { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
+  ];
+  const { config } = CFG.normalize({ dock: { items: oldMenu } });
+  assert.equal(config.dock.items.length, 12);
+  assert.equal(config.dock.items[0].label, "Realm");
+});
+
+test("the very first shipped menu is recognised too", () => {
+  const v01 = [
+    { id: "seed-realm", icon: "🏰", label: "Realm", type: "url", path: "/empire" },
+    { id: "seed-expeditions", icon: "🧭", label: "Expeditions", type: "url", path: "/expeditions" },
+    { id: "seed-champions", icon: "⚔️", label: "Champions", type: "url", path: "/heroes" },
+    { id: "seed-inventory", icon: "🎒", label: "Inventory", type: "url", path: "/inventory" },
+    { id: "seed-buildings", icon: "🏛", label: "Buildings", type: "menu", match: "buildings", door: "/empire" },
+    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "menu", match: "craftables", door: "/empire" },
+    { id: "seed-arena", icon: "🗡", label: "Arena", type: "menu", match: "arena", door: "/expeditions" },
+    { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "menu", match: "hunt", door: "/expeditions" },
+  ];
+  assert.equal(CFG.isShippedMenu(v01), true);
+  assert.equal(CFG.normalize({ dock: { items: v01 } }).config.dock.items.length, 12);
+});
+
+test("a menu with one entry added is the user's, and is left alone", () => {
+  const mine = [
+    ...CFG.defaults().dock.items,
+    { id: "it-mine", icon: "★", label: "My page", type: "url", path: "/delve" },
+  ];
+  const { config } = CFG.normalize({ dock: { items: mine } });
+  assert.equal(config.dock.items.length, 13);
+  assert.equal(config.dock.items[12].label, "My page");
+});
+
+test("a menu with one entry REMOVED is the user's", () => {
+  // Reseeding here would silently put back something deliberately deleted.
+  const trimmed = CFG.defaults().dock.items.slice(0, 4);
+  assert.equal(CFG.isShippedMenu(trimmed), false);
+  const { config } = CFG.normalize({ dock: { items: trimmed } });
+  // Four kept verbatim, plus the one-time v2 host entry — this config carries
+  // no version, so it is a v1 config being brought forward. The links the user
+  // deleted stay deleted; see the migration tests for the host entry's own
+  // rule, which is that deleting it sticks once the version is stamped.
+  assert.equal(config.dock.items.length, 5);
+  assert.deepEqual(
+    mine(config.dock.items.slice(0, 4)).map((i) => i.label),
+    mine(trimmed).map((i) => i.label)
+  );
+  assert.equal(config.dock.items[4].type, "host");
+});
+
+test("reordering or re-icing a shipped menu makes it the user's", () => {
+  const shipped = CFG.defaults().dock.items;
+  const reordered = [shipped[1], shipped[0], ...shipped.slice(2)];
+  assert.equal(CFG.isShippedMenu(reordered), false, "order is part of the fingerprint");
+
+  const reiced = shipped.map((it, i) => (i ? it : { ...it, icon: "🌟" }));
+  assert.equal(CFG.isShippedMenu(reiced), false, "the icon is part of the fingerprint");
+});
+
+test("an empty menu is not a shipped one, so a cleared menu stays cleared", () => {
+  assert.equal(CFG.isShippedMenu([]), false);
+  assert.equal(CFG.normalize({ dock: { items: [] } }).config.dock.items.length, 0);
+});
+
+test("every default path is one the catalog harvested", () => {
+  // The defaults must never contain a guessed path. Kept in step with
+  // catalog.js by hand, so a typo here fails loudly rather than 404ing live.
+  const harvested = new Set([
+    "/empire", "/heroes", "/expeditions", "/conquest", "/arena",
+    "/expeditions/buildings/craftables", "/spellbook", "/military",
+    "/market", "/holds", "/stable",
+    // The rites. NOT in the Realm row and not guessable from the label: the
+    // harvest puts "⚰ Necromancy" in the CHAMPIONS row, three levels deep.
+    "/expeditions/buildings/necromancy",
+  ]);
+  for (const item of CFG.defaults().dock.items) {
+    // A host entry walks to a door rather than pointing at a path, but the
+    // door is a URL like any other and has to come from the harvest too — it
+    // shipped once as /empire, which is a real page carrying no rites at all.
+    const target = item.type === "host" ? item.door : item.path;
+    assert.ok(harvested.has(target), `${item.label} points at unharvested ${target}`);
+  }
+});
+
+test("a shipped menu that was already REPAIRED is still recognised", () => {
+  // LEGACY_SEEDS rewrites entries on every load, so the moment anything writes
+  // settings back, storage holds the repaired menu rather than the shipped one.
+  // Fingerprinting the raw form missed exactly that, and the user saw a menu
+  // that would never move again.
+  const repaired = [
+    { id: "seed-realm", icon: "🏰", label: "Realm", type: "url", path: "/empire" },
+    { id: "seed-expeditions", icon: "🧭", label: "Expeditions", type: "url", path: "/expeditions" },
+    { id: "seed-champions", icon: "⚔️", label: "Champions", type: "url", path: "/heroes" },
+    { id: "seed-inventory", icon: "🎒", label: "Inventory", type: "url", path: "/expeditions/inventory" },
+    { id: "seed-buildings", icon: "🏛", label: "Buildings", type: "url", path: "/expeditions/buildings" },
+    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+    { id: "seed-arena", icon: "🗡", label: "Arena", type: "url", path: "/arena" },
+    { id: "seed-hunt", icon: "🐗", label: "Hunt", type: "url", path: "/hunt" },
+  ];
+  assert.equal(CFG.isShippedMenu(repaired), true);
+  assert.equal(CFG.normalize({ dock: { items: repaired } }).config.dock.items.length, 12);
+});
+
+test("the second shipped menu survives repair-then-write too", () => {
+  // Same story for the six-entry menu: four of its entries were `menu`
+  // patterns that LEGACY_SEEDS turns into paths.
+  const repaired = [
+    { id: "seed-champions", icon: "🛡", label: "Champions", type: "url", path: "/heroes" },
+    { id: "seed-raids", icon: "🏴", label: "Raids", type: "menu", match: "raids", door: "/expeditions" },
+    { id: "seed-sieges", icon: "🏯", label: "Sieges", type: "menu", match: "sieges", door: "/expeditions" },
+    { id: "seed-arena", icon: "⚔️", label: "Arena", type: "url", path: "/arena" },
+    { id: "seed-craftables", icon: "🛠", label: "Craftables", type: "url", path: "/expeditions/buildings/craftables" },
+    { id: "seed-military", icon: "🪖", label: "Military", type: "url", path: "/military" },
+  ];
+  assert.equal(CFG.isShippedMenu(repaired), true);
+});
+
+test("repair-aware matching does not make unrelated menus look shipped", () => {
+  // The relaxation must not turn into "any eight-entry menu matches".
+  // Named `theirs` rather than `mine`: `mine()` is the cross-realm copier.
+  const theirs = [
+    { id: "it-1", icon: "★", label: "Mine", type: "url", path: "/empire" },
+    { id: "it-2", icon: "★", label: "Other", type: "url", path: "/heroes" },
+  ];
+  assert.equal(CFG.isShippedMenu(theirs), false);
+  const { config } = CFG.normalize({ dock: { items: theirs } });
+  assert.equal(config.dock.items.length, 3, "their two, plus the one-time host entry");
+  assert.deepEqual(mine(config.dock.items.slice(0, 2)).map((i) => i.label), ["Mine", "Other"]);
 });

@@ -19,3 +19,6 @@ npm-debug.log*
 # Python test byproducts
 __pycache__/
 *.pyc
+
+# Local Python venv for the Playwright tests.
+.venv/

@@ -7,11 +7,15 @@
  * the visible labels of the game's navigation, plus an optional `door` to walk
  * through first when nothing on the current page matches.
  *
- * That second kind is what makes contextual sub-navigation reachable in one
- * click. Wardenfall only renders CRAFTABLES / ARENA / HUNT once you are inside
- * their parent door, so "go to /expeditions, then click the thing called ARENA"
- * is the honest description of the journey — and it is expressed here as data
- * rather than as a hardcoded route table.
+ * That second kind makes contextual sub-navigation reachable in one click.
+ * Wardenfall only renders CRAFTABLES / ARENA / HUNT once you are inside their
+ * parent door, so "go to /expeditions, then click the thing called ARENA" is
+ * the honest description of the journey, expressed as data rather than as a
+ * hardcoded route table.
+ *
+ * Note that this is about the link not being ON THE PAGE, not about it having
+ * no URL — most of these do have one. See config.js for when each kind is the
+ * right choice; a known-good URL is usually the better entry.
  *
  * Everything lives in its own shadow root, on a host separate from the
  * palette's, so the game's CSS cannot reach in and its re-renders cannot sweep
@@ -26,8 +30,16 @@
   // The game re-renders its sub-nav row asynchronously; six seconds is far
   // longer than it has ever taken, and failing at all is meant to be visible.
   const RESOLVE_MS = 6000;
+  // Every in-game navigation is a full page load, so the content script starts
+  // from nothing each time. Without a cache the hero panel would flash a
+  // placeholder on every single page — so the last known roster is shown
+  // immediately, dimmed, while a fresh read lands underneath it.
+  const HEROES_KEY = "seneschal.heroes.v1";
   const PENDING_KEY = "seneschal.pending.v1";
-  const TOAST_MS = 7000;
+  // A confirmation has done its job the moment you have read it. A warning is
+  // the whole point of the loud-failure design, so it lingers.
+  const TOAST_MS = 2600;
+  const TOAST_WARNING_MS = 7000;
 
   // The soul balance is rendered only on the rites panel and no API exposes
   // it, so the rail shows the LAST READING rather than a live number. Kept
@@ -92,6 +104,11 @@
   class Dock {
     constructor() {
       this.settings = SEN.config.defaults();
+      this.heroes = null;   // null = nothing known yet, [] = read and empty
+      this.healAll = null;
+      this.elixirs = [];
+      this.sieges = null;
+      this.refreshing = false;
       this.watcher = null;
       this.toastTimer = null;
       this.souls = null; // last balance reading: {souls, disturbance, tolerance, at}
@@ -106,7 +123,7 @@
       this.settings = config;
       if (problems.length) {
         console.warn("[Seneschal] quick menu config:", problems.join(" · "));
-        this.toast(`Quick menu: ${problems[0]}`);
+        this.toast(`Quick menu: ${problems[0]}`, true);
       }
       // Stamp the migration forward, or it re-runs on every page load and
       // keeps resurrecting an entry the user deleted.
@@ -120,8 +137,10 @@
         chrome.storage.onChanged.addListener((changes, area) => {
           if (area !== "local") return;
           if (changes[SEN.config.STORAGE_KEY]) {
+            const wasOn = this.settings.heroes?.enabled;
             this.settings = SEN.config.normalize(changes[SEN.config.STORAGE_KEY].newValue).config;
             this.render();
+            if (!wasOn && this.settings.heroes?.enabled) this._refreshHeroes();
           }
           if (changes[SOULS_KEY]) {
             this.souls = changes[SOULS_KEY].newValue || null;
@@ -134,6 +153,23 @@
 
       this._resumePending();
       this._watchSouls();
+
+      // Cache first so the panel paints with real data, then a live read.
+      if (this.settings.heroes?.enabled) {
+        await this._hydrateHeroes();
+        this.render();
+        this._refreshHeroes();
+      }
+    }
+
+    /** Adopt the last known roster so the first paint is never a placeholder. */
+    async _hydrateHeroes() {
+      const cached = await store.get(HEROES_KEY, null);
+      if (!cached || !Array.isArray(cached.heroes)) return;
+      this.heroes = cached.heroes;
+      this.healAll = cached.healAll || null;
+      this.elixirs = Array.isArray(cached.elixirs) ? cached.elixirs : [];
+      this.sieges = Array.isArray(cached.sieges) ? cached.sieges : [];
     }
 
     // --- DOM -----------------------------------------------------------------
@@ -153,6 +189,14 @@
       // screen edge, with the tab beside it and the form opening inward. Put
       // the form first and it no longer shoves the rail sideways when it opens.
       this.wrap.innerHTML = `
+        <div class="dk-ask" hidden role="alertdialog" aria-modal="true" aria-labelledby="dk-ask-title">
+          <h2 id="dk-ask-title"></h2>
+          <p class="dk-ask-body"></p>
+          <div class="dk-actions">
+            <button type="button" class="dk-ask-no">Cancel</button>
+            <button type="button" class="dk-primary dk-ask-yes">Confirm</button>
+          </div>
+        </div>
         <div class="dk-form" hidden role="dialog" aria-label="Add a quick menu entry">
           <h2>Add to quick menu</h2>
           <div class="dk-field">
@@ -192,8 +236,18 @@
           </div>
         </div>
         <button type="button" class="dk-tab" title="Collapse or expand the quick menu"></button>
-        <div class="dk-rail" role="navigation" aria-label="Seneschal quick menu"></div>
-        <div class="dk-toast" role="status" aria-live="polite" hidden></div>`;
+        <div class="dk-rail" role="navigation" aria-label="Seneschal quick menu"></div>`;
+
+      // The toast is a SIBLING of the wrap, not a child. .dk-wrap is
+      // transform: translateY(-50%) to centre itself, and a transformed
+      // ancestor becomes the containing block for position: fixed descendants —
+      // so inside the wrap, "fixed; bottom: 18px" resolved against the rail and
+      // planted the toast on top of the menu.
+      this.toastEl = document.createElement("div");
+      this.toastEl.className = "dk-toast";
+      this.toastEl.setAttribute("role", "status");
+      this.toastEl.setAttribute("aria-live", "polite");
+      this.toastEl.hidden = true;
 
       // OUTSIDE .dk-wrap, deliberately. The wrap carries a `transform` to
       // centre itself vertically, and a transformed element becomes the
@@ -215,9 +269,23 @@
       this.rail = this.wrap.querySelector(".dk-rail");
       this.tab = this.wrap.querySelector(".dk-tab");
       this.form = this.wrap.querySelector(".dk-form");
-      this.toastEl = this.wrap.querySelector(".dk-toast");
       this.errorEl = this.wrap.querySelector(".dk-error");
       this.typeSelect = this.wrap.querySelector("#dk-type");
+      this.ask = this.wrap.querySelector(".dk-ask");
+      this.askTitleEl = this.ask.querySelector("h2");
+      this.askBodyEl = this.ask.querySelector(".dk-ask-body");
+      this.askYes = this.ask.querySelector(".dk-ask-yes");
+
+      this.askYes.addEventListener("click", () => this._closeAsk(true));
+      this.ask.querySelector(".dk-ask-no").addEventListener("click", () => this._closeAsk(false));
+      this.ask.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== "Escape") return;
+        // The game handles keys too, and a re-render underneath an open
+        // question is exactly the kind of thing that eats the answer.
+        e.preventDefault();
+        e.stopPropagation();
+        this._closeAsk(e.key === "Enter");
+      });
       this.sheet = this.scrim.querySelector(".dk-sheet");
 
       this.tab.addEventListener("click", () => this._setCollapsed(!this.settings.dock.collapsed));
@@ -235,7 +303,12 @@
         }
       });
 
-      this.root.append(style, this.wrap, this.scrim);
+      // Both the toast and the scrim are SIBLINGS of .dk-wrap, never children:
+      // the wrap is transformed to centre itself, and a transformed ancestor
+      // becomes the containing block for position:fixed descendants. Nested,
+      // the toast landed on the menu and the scrim rendered as a narrow column
+      // crushed against the edge. Keep them out here.
+      this.root.append(style, this.wrap, this.toastEl, this.scrim);
       // documentElement, not body: the game re-renders body subtrees on a timer.
       document.documentElement.appendChild(this.host);
     }
@@ -249,8 +322,22 @@
       this.tab.setAttribute("aria-expanded", String(!collapsed));
 
       this.rail.textContent = "";
+
+      // The links live in their own scroller. A long menu and a full hero panel
+      // together outgrow a laptop screen, and when the rail scrolled as ONE
+      // block the heal buttons — the part you actually press — fell below the
+      // fold. Now the link list gives up its space first and the panel stays put.
+      const list = document.createElement("div");
+      list.className = "dk-items";
+      // Rites do NOT go in the scroller. They carry the soul / raisable-dead
+      // badge, and the scroller is by design the first thing to surrender
+      // space — so a rite in here is exactly the row that scrolls out of sight
+      // on a laptop, taking the reading with it. A screenshot caught this; the
+      // suite was green, because scrolled-away is not missing.
+      const rites = items.filter((it) => it.type === "host");
       for (const item of items) {
-        this.rail.appendChild(this._itemButton(item));
+        if (item.type === "host") continue;
+        list.appendChild(this._itemButton(item));
       }
       if (!items.length) {
         const empty = document.createElement("button");
@@ -259,8 +346,18 @@
         empty.title = "Add your first quick menu entry";
         empty.append(this._span("dk-icon", "＋"), this._span("dk-text", "Add a link"));
         empty.addEventListener("click", () => this._openForm());
-        this.rail.appendChild(empty);
+        list.appendChild(empty);
       }
+      this.rail.appendChild(list);
+
+      if (rites.length) {
+        const box = document.createElement("div");
+        box.className = "dk-rites";
+        for (const item of rites) box.appendChild(this._itemButton(item));
+        this.rail.appendChild(box);
+      }
+
+      if (this.settings.heroes?.enabled) this.rail.appendChild(this._heroSection());
 
       const sep = document.createElement("div");
       sep.className = "dk-sep";
@@ -275,6 +372,311 @@
       this._paintSouls();
 
       if (!this.form.hidden) this._closeForm();
+    }
+
+    // --- hero panel ----------------------------------------------------------
+    /**
+     * HP for every hero, read from /heroes — one GET, works on any page, and
+     * never mutates anything. The heal button is the single exception and is
+     * explicit about it.
+     */
+    _heroSection() {
+      const box = document.createElement("div");
+      box.className = "dk-heroes" + (this.refreshing ? " dk-refreshing" : "");
+
+      const sep = document.createElement("div");
+      sep.className = "dk-sep";
+      box.appendChild(sep);
+
+      // Only ever seen on the very first run, before anything is cached.
+      if (!this.heroes) {
+        const loading = document.createElement("div");
+        loading.className = "dk-hero";
+        loading.append(this._span("dk-icon", "⛑"), this._span("dk-hero-name", "Reading heroes…"));
+        box.appendChild(loading);
+        return box;
+      }
+
+      // The game's own "heal all", mirrored. It brews the draughts itself and
+      // prices the job, so the quote shown here is its arithmetic, not ours.
+      if (this.healAll && this.healAll.available) {
+        const all = document.createElement("button");
+        all.type = "button";
+        all.className = "dk-healall";
+        all.append(this._span("dk-icon", "💚"), this._span("dk-text", "Heal all"));
+        all.title = this.healAll.summary || "Mend every wounded hero";
+        all.addEventListener("click", () => this._healAll(all));
+        box.appendChild(all);
+
+        if (this.healAll.summary && !this.settings.dock.collapsed) {
+          const quote = document.createElement("div");
+          quote.className = "dk-quote";
+          quote.textContent = this.healAll.summary;
+          box.appendChild(quote);
+        }
+      }
+
+      for (const hero of this.heroes) {
+        const row = document.createElement("div");
+        row.className = "dk-hero";
+        row.append(
+          this._span("dk-icon", hero.icon || "🗡"),
+          this._span("dk-hero-name", hero.name),
+          this._span("dk-hero-hp", `${hero.hp}/${hero.maxHp}`)
+        );
+
+        box.appendChild(row);
+
+        const bar = document.createElement("div");
+        bar.className = "dk-bar";
+        const fill = document.createElement("div");
+        const frac = SEN.heroes.hpFraction(hero);
+        fill.className = "dk-bar-fill" + (frac < 0.34 ? " dk-bad" : frac < 0.85 ? " dk-hurt" : "");
+        fill.style.width = `${Math.round(frac * 100)}%`;
+        bar.appendChild(fill);
+        box.appendChild(bar);
+
+        // One button per way of healing, but only for someone who needs it.
+        if (SEN.heroes.isDamaged(hero)) box.appendChild(this._healMethods(hero));
+      }
+
+      // Which siege the heal acts on. Hidden unless there is a real choice.
+      const siege = document.createElement("button");
+      siege.type = "button";
+      siege.className = "dk-siege";
+      const active = this.sieges || [];
+      const chosen = (active.includes(this.settings.heroes.siege) && this.settings.heroes.siege) || active[0] || "";
+      if (!active.length) {
+        siege.textContent = "No active siege";
+        siege.title = "Provisions healing needs a siege you are committed to";
+        siege.disabled = true;
+        siege.hidden = this.heroes === null;
+      } else {
+        siege.textContent = `Heals from: ${chosen.replace(/^The /, "")}`;
+        siege.title = "Click to draw heals from a different active siege";
+        siege.hidden = active.length < 2 && !chosen;
+      }
+      siege.addEventListener("click", () => this._cycleSiege());
+      box.appendChild(siege);
+
+      return box;
+    }
+
+    /**
+     * One button per way of healing, each naming itself and its price.
+     *
+     * A single "heal" button once spent the scarcest elixir — a Wardenbalm,
+     * +50 HP — closing a 79 HP wound, because nothing told the user which
+     * method it would pick. Naming each method is the fix: the choice is
+     * always theirs, and always priced before it is made.
+     */
+    _healMethods(hero) {
+      const gap = hero.maxHp - hero.hp;
+      const strip = document.createElement("div");
+      strip.className = "dk-methods";
+
+      const add = (glyph, title, enabled, run) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "dk-method";
+        button.textContent = glyph;
+        button.title = title;
+        button.disabled = !enabled;
+        if (enabled) button.addEventListener("click", () => run(button));
+        strip.appendChild(button);
+      };
+
+      // Siege provisions: cheap, but only inside a siege you are committed to.
+      const siege = (this.sieges || []).includes(this.settings.heroes.siege)
+        ? this.settings.heroes.siege
+        : (this.sieges || [])[0] || "";
+      add(
+        "⛑",
+        siege
+          ? `Siege provisions · from ${siege} · spends 4 of this champion's resource`
+          : "Siege provisions · needs a siege you are committed to",
+        Boolean(siege),
+        (button) => this._heal(hero, button, { kind: "siege", siege })
+      );
+
+      for (const elixir of this.elixirs || []) {
+        // Flag an elixir that would be wasted on a small wound — exactly the
+        // mistake the old single button made.
+        const overkill = elixir.mend && elixir.mend > gap + 15 ? " · more than this wound needs" : "";
+        const supply =
+          elixir.held > 0
+            ? `you hold ${elixir.held}`
+            : elixir.canCraft
+              ? `none held — brews one for ${elixir.cost}`
+              : "none held, and not enough materials to brew";
+        add(
+          elixir.icon,
+          `${elixir.name} · +${elixir.mend} HP · ${supply}${overkill}`,
+          Boolean(elixir.canUse),
+          (button) => this._heal(hero, button, { kind: "elixir", elixir })
+        );
+      }
+      return strip;
+    }
+
+    /**
+     * Fetch the roster in the background. Whatever is already on screen stays
+     * there, dimmed, until this lands — so navigating between pages never
+     * blanks the panel.
+     */
+    async _refreshHeroes() {
+      if (this.refreshing) return;
+      this.refreshing = true;
+      this._paintRefreshing();
+      try {
+        const [roster, sieges] = await Promise.all([
+          SEN.heroes.loadRoster(),
+          SEN.heroes.loadSieges().catch(() => []),
+        ]);
+        this.heroes = roster.heroes;
+        this.healAll = roster.healAll;
+        this.sieges = sieges;
+        // Only worth a third request when there is actually something to heal.
+        this.elixirs = roster.heroes.some(SEN.heroes.isDamaged)
+          ? await SEN.heroes.loadElixirs().catch(() => [])
+          : [];
+        await store.set(HEROES_KEY, {
+          heroes: roster.heroes,
+          healAll: roster.healAll,
+          elixirs: this.elixirs,
+          sieges,
+          at: Date.now(),
+        });
+        this.refreshing = false;
+        this.render();
+      } catch (e) {
+        // A request killed by navigating away is routine, not a fault: every
+        // in-game click is a full page load, so a refresh started moments
+        // earlier is cancelled and rejects as "Failed to fetch". Saying nothing
+        // is correct — the cached roster is still on screen and the next page
+        // will refresh it.
+        //
+        // Anything else stays quiet too, but is logged: a failed read means
+        // /heroes moved or we are not on Wardenfall, and a toast on every page
+        // load would be noise. The loud path is _heal(), where something was
+        // actually at stake.
+        if (!SEN.heroes.isAbort(e)) console.warn("[Seneschal] could not read heroes:", e);
+        this.refreshing = false;
+        if (!this.heroes) {
+          this.heroes = [];
+          this.render();
+        } else {
+          this._paintRefreshing();
+        }
+      }
+    }
+
+    /**
+     * Toggle the "updating" look directly, without re-rendering — a rebuild
+     * here would throw away the rows we are deliberately keeping on screen.
+     */
+    _paintRefreshing() {
+      const box = this.rail.querySelector(".dk-heroes");
+      if (box) box.classList.toggle("dk-refreshing", this.refreshing);
+    }
+
+    /** Rotate through the active sieges; the first is the default. */
+    async _cycleSiege() {
+      if (!this.sieges || this.sieges.length < 2) return;
+      const current = this.settings.heroes.siege || this.sieges[0];
+      const next = this.sieges[(this.sieges.indexOf(current) + 1) % this.sieges.length];
+      this.settings = { ...this.settings, heroes: { ...this.settings.heroes, siege: next } };
+      this.render();
+      await store.set(SEN.config.STORAGE_KEY, this.settings);
+      this.toast(`Heals now draw from ${next}.`);
+    }
+
+    /**
+     * The only thing in the extension that spends anything, so it asks first,
+     * says exactly what it cost, and VERIFIES against the server rather than
+     * assuming the click worked.
+     */
+    async _heal(hero, button, method) {
+      // The button is disabled at full health, but the guard is repeated here
+      // so a stale row cannot spend provisions on a hero who does not need it.
+      if (!SEN.heroes.isDamaged(hero)) {
+        this.toast(`${hero.name} is already at full health.`);
+        return;
+      }
+
+      // The method was chosen by the user, never inferred — and it is priced
+      // in the confirm, including when an elixir has to be brewed first.
+      const cost =
+        method.kind === "siege"
+          ? `4 provisions from ${method.siege}`
+          : method.elixir.held > 0
+            ? `one ${method.elixir.name} (+${method.elixir.mend} HP)`
+            : `${method.elixir.cost} to brew a ${method.elixir.name} (+${method.elixir.mend} HP)`;
+      const go = await this._ask({
+        title: `Heal ${hero.name}?`,
+        body: `${hero.hp}/${hero.maxHp} HP. This spends ${cost}.`,
+        confirmLabel: "Heal",
+      });
+      if (!go) return;
+
+      button.disabled = true;
+      button.classList.add("dk-busy");
+      try {
+        const out =
+          method.kind === "siege"
+            ? await SEN.heroes.heal({ heroName: hero.name, siege: method.siege })
+            : await SEN.heroes.healWithElixir({ heroName: hero.name, key: method.elixir.key });
+        if (out.healed) {
+          const how = out.elixir ? ` with ${out.brewed ? "a freshly brewed " : ""}${out.elixir}` : "";
+          this.toast(`${hero.name}: ${out.before} → ${out.after}/${out.maxHp}${how}.`);
+        } else {
+          // Loud: a click that changed nothing means the button moved, the
+          // siege ended, or the server refused. If the frame can say WHY, say
+          // that instead of leaving you to guess.
+          const why = out.blocked ? ` — ${out.blocked}` : "";
+          this.toast(`Heal did not take${why}. ${hero.name} is still ${out.before}/${out.maxHp}.`, true);
+        }
+      } catch (e) {
+        console.warn("[Seneschal] heal failed:", e);
+        this.toast(`Could not heal ${hero.name}: ${e.message}`, true);
+      } finally {
+        button.classList.remove("dk-busy");
+        this._refreshHeroes(); // keeps the current rows up while it re-reads
+      }
+    }
+
+    // --- asking --------------------------------------------------------------
+
+    /**
+     * Ask a yes/no question in the dock's own panel, beside the rail.
+     *
+     * NEVER `confirm()`. Native dialogs are a hard no in this extension: they
+     * are browser chrome, so they read as the browser speaking rather than us,
+     * they cannot be styled or placed, they freeze the page and every timer on
+     * it, and in an automated browser they hang the session outright. Anything
+     * that needs an answer asks here.
+     *
+     * @returns {Promise<boolean>}
+     */
+    _ask({ title, body, confirmLabel = "Confirm" }) {
+      this._closeAsk(false); // never stack two questions
+      return new Promise((resolve) => {
+        this.askResolve = resolve;
+        this.askTitleEl.textContent = title;
+        this.askBodyEl.textContent = body || "";
+        this.askBodyEl.hidden = !body;
+        this.askYes.textContent = confirmLabel;
+        this.ask.hidden = false;
+        this.askYes.focus();
+      });
+    }
+
+    /** Settle an open question. Safe to call when nothing is open. */
+    _closeAsk(answer) {
+      if (this.ask) this.ask.hidden = true;
+      const resolve = this.askResolve;
+      this.askResolve = null;
+      if (resolve) resolve(answer);
     }
 
     _span(className, text) {
@@ -369,7 +771,12 @@
       const size = SEN.config.clampSouls(item.souls);
       const base = `${item.label} — raise a spectral host of ${SEN.necro.formatCount(size)}`;
       if (!this.souls) return `${base}\nSoul balance not read yet`;
-      return `${base}\n${SEN.necro.formatCount(this.souls.souls)} souls, read ${SEN.necro.formatAge(this.souls.at)}`;
+      const n = SEN.necro;
+      const pool =
+        this.souls.dead == null
+          ? ""
+          : `, ${n.formatCount(this.souls.dead)} raisable dead`;
+      return `${base}\n${n.formatCount(this.souls.souls)} souls${pool}, read ${n.formatAge(this.souls.at)}`;
     }
 
     /**
@@ -377,13 +784,31 @@
      * because the balance updates on a poll and re-rendering the whole rail
      * four times a minute would fight with the pending spinner.
      */
+    /**
+     * The rail badge: souls and raisable dead, short-form.
+     *
+     * An em dash for "nothing read yet" rather than a zero — zero souls is a
+     * real and actionable state, and showing it before we have looked would be
+     * a lie about a number that gates a spend.
+     */
+    _soulsBadge() {
+      if (!this.souls) return "—";
+      const n = SEN.necro;
+      const souls = `${n.formatShort(this.souls.souls)}💀`;
+      if (this.souls.dead == null) return souls;
+      return `${souls} ${n.formatShort(this.souls.dead)}👻`;
+    }
+
     _paintSouls() {
       if (!this.rail) return;
       const fresh = this.souls && Date.now() - (this.souls.at || 0) < SOULS_FRESH_MS;
       for (const btn of this.rail.querySelectorAll('.dk-btn[data-type="host"]')) {
         const badge = btn.querySelector('[data-role="souls"]');
         if (!badge) continue;
-        badge.textContent = this.souls ? SEN.necro.formatShort(this.souls.souls) : "—";
+        // Both currencies, because neither one alone tells you what you can
+        // raise: souls are the catalyst, the fallen are the pool, and no
+        // amount of sacrificing turns one into the other.
+        badge.textContent = this._soulsBadge();
         badge.classList.toggle("dk-stale", !fresh);
         const item = this.settings.dock.items.find((it) => it.id === btn.dataset.id);
         if (item) btn.title = this._itemTitle(item);
@@ -415,6 +840,7 @@
       const same =
         this.souls &&
         this.souls.souls === next.souls &&
+        this.souls.dead === next.dead &&
         this.souls.disturbance === next.disturbance;
       this.souls = next;
       this._paintSouls();
@@ -452,7 +878,7 @@
     _goto(path) {
       const target = SEN.config.classifyPath(path, location.origin);
       if (!target) {
-        this.toast(`Quick menu: "${path}" is not a usable link.`);
+        this.toast(`Quick menu: "${path}" is not a usable link.`, true);
         return false;
       }
       if (target.kind === "external") {
@@ -484,7 +910,7 @@
     _openMenuEntry(item) {
       const parsed = SEN.config.parsePattern(item.match);
       if (parsed.error) {
-        this.toast(`Quick menu: "${item.label}" has a bad pattern — ${parsed.error}`);
+        this.toast(`Quick menu: "${item.label}" has a bad pattern — ${parsed.error}`, true);
         return;
       }
 
@@ -494,7 +920,7 @@
         return;
       }
       if (!item.door) {
-        this.toast(`Quick menu: nothing here is called "${item.match}", and "${item.label}" has no door set.`);
+        this.toast(`Quick menu: nothing here is called "${item.match}", and "${item.label}" has no door set.`, true);
         return;
       }
 
@@ -516,6 +942,16 @@
       if (!pending || !pending.match) return;
       if (!(pending.expires > Date.now())) {
         session.clear(PENDING_KEY);
+        return;
+      }
+      // Arrival at the rites is defined by a readable balance, not by a click
+      // having happened. Now that the door IS the rites URL, the page we just
+      // loaded is usually already the destination — and the label we would
+      // hunt for is its own nav entry, sitting right there. Clicking it would
+      // navigate back to where we already are.
+      if (pending.rite && SEN.necro.readBalance(document)) {
+        session.clear(PENDING_KEY);
+        this._setPending(null);
         return;
       }
       // A reload eats part of the budget; give the fresh page a full window.
@@ -551,10 +987,11 @@
             return;
           }
           // LOUD failure. A pattern that stopped matching after a patch must
-          // not look like a button that simply does nothing.
+          // not look like a button that simply does nothing — hence the
+          // warning styling and the longer dwell, not a plain confirmation.
           const message = `Quick menu: could not find a menu entry matching "${pending.match}".`;
           console.warn("[Seneschal]", message);
-          if (!quiet) this.toast(message);
+          if (!quiet) this.toast(message, true);
           resolve(null);
         };
 
@@ -633,7 +1070,7 @@
       const busy = (message) => this._setPending({ id: item.id, label: message });
       const refuse = (message) => {
         console.warn("[Seneschal]", message);
-        this.toast(`Raise host: ${message}`);
+        this.toast(`Raise host: ${message}`, true);
       };
 
       try {
@@ -656,6 +1093,15 @@
           refuse("found the Spectral Host rite but not the button that performs it.");
           return;
         }
+        // A disabled button is the game's own refusal — it knows the balance
+        // and the pool better than we do. Report that rather than clicking a
+        // no-op and then blaming the balance for not moving.
+        if (SEN.necro.isBlocked(hostButton)) {
+          refuse(
+            `the game has the Spectral Host button disabled right now (it reads "${SEN.scanner.labelOf(hostButton)}"). Nothing was performed.`
+          );
+          return;
+        }
 
         // How the size of the host gets decided. If we cannot tell, we stop:
         // performing a rite without knowing what it spends is the one thing
@@ -669,6 +1115,21 @@
         }
         const want = sizing.kind === "fixed" ? sizing.cost : SEN.config.clampSouls(item.souls);
 
+        // The rate converting a host size into a price is stated on the card
+        // itself ("Costs 1 dead + 1 soul per 1,000 raised"). Read it; never
+        // assume it. Assuming one soul per ghost overstated a 10,000 host by a
+        // factor of a thousand, and the only thing that stopped that becoming
+        // forty sacrifices was an unrelated wording difference on another
+        // button. plan() refuses outright when this comes back null.
+        const rate = SEN.necro.parseHostRate(SEN.necro.blockText(host.el));
+        if (!rate) {
+          refuse(
+            "the Spectral Host rite does not say what it costs per ghost raised, so there is no way to price the click. Nothing was performed."
+          );
+          return;
+        }
+        const deadHave = reading.dead;
+
         const harvest = SEN.necro.findRiteCard("harvest");
         const harvestButton = harvest ? SEN.necro.performButton(harvest) : null;
         const perHarvest = harvestButton
@@ -678,6 +1139,8 @@
         const plan = SEN.necro.plan({
           have: reading.souls,
           want,
+          rate,
+          deadHave,
           perHarvest: perHarvest && perHarvest > 0 ? perHarvest : null,
           disturbance: reading.disturbance,
           tolerance: reading.tolerance,
@@ -695,7 +1158,7 @@
       } catch (err) {
         const message = (err && err.message) || String(err);
         console.warn("[Seneschal] raise host:", err);
-        this.toast(`Raise host: ${message}`);
+        this.toast(`Raise host: ${message}`, true);
       } finally {
         this.running = false;
         this._setPending(null);
@@ -739,6 +1202,10 @@
         id: item.id,
         match: item.match,
         label: item.label,
+        // Marks this as a walk to the rites rather than to a nav entry, so the
+        // resume after the page load knows that a readable balance already
+        // means "arrived" and there is nothing left to click.
+        rite: true,
         expires: Date.now() + RESOLVE_MS,
       };
       session.write(PENDING_KEY, pending);
@@ -804,6 +1271,11 @@
             `the Soul-Harvest button vanished after ${done} sacrifice${done === 1 ? "" : "s"} — stopped, nothing raised.`
           );
         }
+        if (SEN.necro.isBlocked(button)) {
+          throw new Error(
+            `the Soul-Harvest button is disabled after ${done} sacrifice${done === 1 ? "" : "s"} — stopped, nothing raised.`
+          );
+        }
         const before = (SEN.necro.readBalance(document) || {}).souls;
         button.click();
         const after = await this._awaitSoulChange(before);
@@ -820,6 +1292,11 @@
       const card = SEN.necro.findRiteCard("host");
       const button = card ? SEN.necro.performButton(card) : null;
       if (!button) throw new Error("the Spectral Host button vanished before the raise.");
+      if (SEN.necro.isBlocked(button)) {
+        throw new Error(
+          `the Spectral Host button is disabled${done ? ` after ${done} sacrifice${done === 1 ? "" : "s"}` : ""} — nothing raised.`
+        );
+      }
 
       if (sizing.kind === "input") {
         const input = SEN.necro.sizeInput(card);
@@ -837,7 +1314,8 @@
       this._setPending(null);
       if (!after) {
         this.toast(
-          `Raise host: clicked Spectral Host but the balance did not move${done ? ` (${done} sacrifice${done === 1 ? "" : "s"} were made)` : ""}. Check the page.`
+          `Raise host: clicked Spectral Host but the balance did not move${done ? ` (${done} sacrifice${done === 1 ? "" : "s"} were made)` : ""}. Check the page.`,
+          true
         );
         return;
       }
@@ -853,6 +1331,11 @@
     _confirmRite(plan, sizing) {
       const n = SEN.necro;
       const readings = [["Souls", n.formatCount(plan.have)]];
+      // The dead are the other half of the price and are NOT interchangeable
+      // with souls — no sacrifice refills the pool — so the sheet shows both
+      // rather than letting "souls" stand in for the whole cost.
+      if (plan.deadHave != null) readings.push(["Raisable dead", n.formatCount(plan.deadHave)]);
+      if (plan.cost) readings.push(["This rite costs", n.priceOf(plan)]);
       if (plan.disturbance != null) {
         readings.push([
           "Disturbance",
@@ -984,6 +1467,7 @@
 
     // --- add form ------------------------------------------------------------
     _openForm() {
+      this._closeAsk(false); // one panel beside the rail at a time
       this.form.hidden = false;
       this._showError("");
       const label = this.wrap.querySelector("#dk-label");
@@ -1063,6 +1547,37 @@
       this.toast(`Added "${result.item.label}" to the quick menu.`);
     }
 
+    /** Press the game's own heal-all, quoting its own price back to you. */
+    async _healAll(button) {
+      const go = await this._ask({
+        title: "Heal every wounded hero?",
+        // The game's own costing, quoted verbatim — it picks the elixirs and
+        // does the arithmetic, and a second implementation would eventually
+        // disagree with it.
+        body: this.healAll?.summary || "",
+        confirmLabel: "Heal all",
+      });
+      if (!go) return;
+
+      button.disabled = true;
+      button.classList.add("dk-busy");
+      try {
+        const out = await SEN.heroes.healAll();
+        if (out.healed) {
+          this.toast(`Mended ${out.wounded} hero${out.wounded === 1 ? "" : "es"}, +${out.gained} HP.`);
+        } else {
+          const why = out.blocked ? ` — ${out.blocked}` : " — nothing changed.";
+          this.toast(`Heal all did not take${why}`, true);
+        }
+      } catch (e) {
+        console.warn("[Seneschal] heal all failed:", e);
+        this.toast(`Could not heal all: ${e.message}`, true);
+      } finally {
+        button.classList.remove("dk-busy");
+        this._refreshHeroes();
+      }
+    }
+
     async _setCollapsed(collapsed) {
       this.settings = { ...this.settings, dock: { ...this.settings.dock, collapsed } };
       this.render();
@@ -1073,19 +1588,21 @@
       try {
         chrome.runtime.sendMessage({ type: "seneschal:open-options" });
       } catch {
-        this.toast("Open the Seneschal options from chrome://extensions to configure the quick menu.");
+        this.toast("Open the Seneschal options from chrome://extensions to configure the quick menu.", true);
       }
     }
 
     // --- toast ---------------------------------------------------------------
-    toast(message) {
+    /** @param {boolean} [warning] true keeps it up long enough to be read and acted on. */
+    toast(message, warning = false) {
       this.toastEl.removeAttribute("data-busy");
       this.toastEl.textContent = message;
+      this.toastEl.classList.toggle("dk-warn", warning);
       this.toastEl.hidden = false;
       clearTimeout(this.toastTimer);
       this.toastTimer = setTimeout(() => {
         this.toastEl.hidden = true;
-      }, TOAST_MS);
+      }, warning ? TOAST_WARNING_MS : TOAST_MS);
     }
   }
 
