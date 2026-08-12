@@ -282,6 +282,44 @@ would ARM the only irreversible action in the extension. That is a decision to
 take deliberately, with the user, not a gap to tidy up; `necro.test.mjs` pins it
 so nobody tidies it up by accident.
 
+**25. Rites are performed in a HIDDEN FRAME, not by navigating.** "Raise host"
+used to walk you to /necromancy and leave you there — the button performed a
+page change, not a rite. It now loads the rites with `SEN.heroes.openFrame`, the
+same machinery healing uses (finding 11), so the page you are on never changes.
+Two consequences worth keeping: the frame the PLAN was read from is closed
+before performing, because its buttons are as stale as the numbers the user
+spent ten seconds reading; and the fresh frame re-reads the balance and REFUSES
+if it moved, so a quote can never be honoured against numbers nobody saw.
+
+**26. The standing spectral host is rendered NOWHERE.** Measured 2026-08-12
+across /conquest, /military, /empire, /expeditions and /heroes: no page prints
+it. The only source is the Next.js flight payload on /conquest, escaped:
+`\"ghostHost\":{\"armed\":true,\"size\":10000}`. That is an internal, so by
+finding 3 it will rot — `parseGhostHost` therefore returns **null, never zero**,
+when it cannot read one, and the badge falls back to the soul balance. "You have
+no host" is precisely the reading that talks someone into raising a second one.
+
+**27. One toast slot cannot describe concurrent work.** Healing five heroes
+posts five results seconds apart, and a single element meant each wiped the
+last: you saw one line and assumed the other four had not happened. Toasts are a
+STACK now (`.dk-toasts`), positioned from the rail's MEASURED box so messages
+appear beside the thing they are about. `toast()` returns a handle, so a slow
+action posts "Healing X…" and later becomes its own result rather than leaving a
+stale line behind and adding a second one.
+
+**27b. BUSY IS NOT DISABLED.** The same heal marked itself in flight by setting
+`button.disabled`, which draws a method button at the same 30% opacity as one
+you *cannot use* — so "working on it" and "unavailable" were the same picture.
+Re-entry is guarded by the `healing` map keyed on hero + method (which also
+survives the roster re-render that happens underneath a running heal); the
+button stays at full opacity, goes amber, and swaps its glyph for a spinner.
+
+**27c. Questions QUEUE, they do not replace.** `_ask` used to close any open
+question when a new one arrived, which silently answered it *no*. Firing five
+heal buttons in a row therefore healed one hero. They line up now and are asked
+in the order clicked; opening the add form drains the queue rather than leaving
+four questions waiting to pounce.
+
 ## Working agreements
 
 - **Verify in a browser; do not trust reading.** Every bug so far was caught by
@@ -307,13 +345,13 @@ node --test test/learned.test.mjs   # 11
 node --test test/config.test.mjs    # 43
 node --test test/heroes.test.mjs    # 14
 node --test test/pending.test.mjs   # 11
-node --test test/necro.test.mjs     # 44
+node --test test/necro.test.mjs     # 47
 python3 test/e2e.py                 # 26
-python3 test/dock.py                # 114
+python3 test/dock.py                # 127
 python3 test/harvest.py             # 15
 ```
 
-290 checks. Keep them passing.
+306 checks. Keep them passing.
 
 The Python tests need Playwright. There is a local `.venv` (gitignored):
 `.venv/bin/python3 test/dock.py`. `test/chromium_path.py` finds a Chromium

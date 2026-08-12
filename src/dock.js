@@ -40,6 +40,9 @@
   // the whole point of the loud-failure design, so it lingers.
   const TOAST_MS = 2600;
   const TOAST_WARNING_MS = 7000;
+  // How many messages can be on screen at once. Healing a full roster posts one
+  // per hero; past this the oldest goes, so a burst cannot march off screen.
+  const MAX_TOASTS = 6;
 
   // The soul balance is rendered only on the rites panel and no API exposes
   // it, so the rail shows the LAST READING rather than a live number. Kept
@@ -110,7 +113,9 @@
       this.sieges = null;
       this.refreshing = false;
       this.watcher = null;
-      this.toastTimer = null;
+      this.busyHandle = null;   // the single in-flight toast a hunt owns
+      this.healing = new Map(); // heals in flight, keyed by hero + method
+      this.askQueue = [];       // questions waiting their turn beside the rail
       this.souls = null; // last balance reading: {souls, disturbance, tolerance, at}
       this.soulsTimer = null;
       this.running = false; // a rite is mid-flight; the rail is inert
@@ -130,6 +135,11 @@
       if (migrated) await store.set(SEN.config.STORAGE_KEY, this.settings);
 
       this.souls = await store.get(SOULS_KEY, null);
+      // Read the cached roster BEFORE the first paint, not after. Rendering
+      // first put a "Reading heroes…" placeholder on screen for a frame — and
+      // since every in-game navigation is a full page load, that flash was on
+      // EVERY page, not just the first. Hydrating first removes it entirely.
+      if (this.settings.heroes?.enabled) await this._hydrateHeroes();
       this.render();
 
       // Keep every tab in step with the options page (and with each other).
@@ -153,13 +163,12 @@
 
       this._resumePending();
       this._watchSouls();
+      // The stack is positioned from the rail's measured box, so it has to be
+      // re-measured whenever that box can move.
+      addEventListener("resize", () => this._positionToasts(), { passive: true });
 
-      // Cache first so the panel paints with real data, then a live read.
-      if (this.settings.heroes?.enabled) {
-        await this._hydrateHeroes();
-        this.render();
-        this._refreshHeroes();
-      }
+      // The cache is already on screen; this is the live read that replaces it.
+      if (this.settings.heroes?.enabled) this._refreshHeroes();
     }
 
     /** Adopt the last known roster so the first paint is never a placeholder. */
@@ -243,11 +252,13 @@
       // ancestor becomes the containing block for position: fixed descendants —
       // so inside the wrap, "fixed; bottom: 18px" resolved against the rail and
       // planted the toast on top of the menu.
-      this.toastEl = document.createElement("div");
-      this.toastEl.className = "dk-toast";
-      this.toastEl.setAttribute("role", "status");
-      this.toastEl.setAttribute("aria-live", "polite");
-      this.toastEl.hidden = true;
+      // A STACK, not a single slot. Healing five heroes fires five results
+      // seconds apart, and a single element meant each one wiped the last —
+      // you saw one message and had no idea the other four had happened.
+      this.toastStack = document.createElement("div");
+      this.toastStack.className = "dk-toasts";
+      this.toastStack.setAttribute("role", "status");
+      this.toastStack.setAttribute("aria-live", "polite");
 
       // OUTSIDE .dk-wrap, deliberately. The wrap carries a `transform` to
       // centre itself vertically, and a transformed element becomes the
@@ -308,7 +319,7 @@
       // becomes the containing block for position:fixed descendants. Nested,
       // the toast landed on the menu and the scrim rendered as a narrow column
       // crushed against the edge. Keep them out here.
-      this.root.append(style, this.wrap, this.toastEl, this.scrim);
+      this.root.append(style, this.wrap, this.toastStack, this.scrim);
       // documentElement, not body: the game re-renders body subtrees on a timer.
       document.documentElement.appendChild(this.host);
     }
@@ -354,6 +365,15 @@
         const box = document.createElement("div");
         box.className = "dk-rites";
         for (const item of rites) box.appendChild(this._itemButton(item));
+        // The cost inputs, under the rite that spends them — same shape as the
+        // game's own price quote under Heal all.
+        // Its own class, not .dk-quote: that one is the GAME's price quote
+        // under Heal all, and two different things sharing a selector is how a
+        // test starts reading the wrong number.
+        const detail = document.createElement("div");
+        detail.className = "dk-rite-quote";
+        detail.dataset.role = "souls-detail";
+        box.appendChild(detail);
         this.rail.appendChild(box);
       }
 
@@ -370,6 +390,8 @@
       this.rail.append(sep, tools);
       this._paintPending();
       this._paintSouls();
+      this._paintHealing();
+      this._positionToasts();
 
       if (!this.form.hidden) this._closeForm();
     }
@@ -475,13 +497,18 @@
       const strip = document.createElement("div");
       strip.className = "dk-methods";
 
-      const add = (glyph, title, enabled, run) => {
+      const add = (glyph, title, enabled, run, key) => {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "dk-method";
         button.textContent = glyph;
         button.title = title;
         button.disabled = !enabled;
+        // The key survives a re-render, which the element does not: a heal
+        // takes seconds, and the roster re-reads underneath it. Without this
+        // the spinner on hero three vanished the moment hero one came back.
+        button.dataset.healKey = `${hero.name}::${key}`;
+        button.dataset.glyph = glyph;
         if (enabled) button.addEventListener("click", () => run(button));
         strip.appendChild(button);
       };
@@ -496,7 +523,8 @@
           ? `Siege provisions · from ${siege} · spends 4 of this champion's resource`
           : "Siege provisions · needs a siege you are committed to",
         Boolean(siege),
-        (button) => this._heal(hero, button, { kind: "siege", siege })
+        (button) => this._heal(hero, button, { kind: "siege", siege }),
+        "siege"
       );
 
       for (const elixir of this.elixirs || []) {
@@ -513,7 +541,8 @@
           elixir.icon,
           `${elixir.name} · +${elixir.mend} HP · ${supply}${overkill}`,
           Boolean(elixir.canUse),
-          (button) => this._heal(hero, button, { kind: "elixir", elixir })
+          (button) => this._heal(hero, button, { kind: "elixir", elixir }),
+          `elixir:${elixir.key}`
         );
       }
       return strip;
@@ -619,8 +648,19 @@
       });
       if (!go) return;
 
-      button.disabled = true;
-      button.classList.add("dk-busy");
+      // Re-entry is guarded by the KEY, not by disabling the button. A disabled
+      // method button is drawn at 30% opacity — the same as one you cannot use
+      // — so marking work in flight that way made a heal in progress look like
+      // a heal that was unavailable. That is what "no loading indicator" was.
+      const key = button.dataset.healKey;
+      if (this.healing.has(key)) return;
+
+      // Each heal owns its own line, so five of them in flight read as five
+      // things happening rather than one message replacing another.
+      const live = this.toast(`Healing ${hero.name}…`, { busy: true });
+      this.healing.set(key, live);
+      this._paintHealing();
+
       try {
         const out =
           method.kind === "siege"
@@ -628,20 +668,49 @@
             : await SEN.heroes.healWithElixir({ heroName: hero.name, key: method.elixir.key });
         if (out.healed) {
           const how = out.elixir ? ` with ${out.brewed ? "a freshly brewed " : ""}${out.elixir}` : "";
-          this.toast(`${hero.name}: ${out.before} → ${out.after}/${out.maxHp}${how}.`);
+          live.update(`${hero.name}: ${out.before} → ${out.after}/${out.maxHp}${how}.`);
         } else {
           // Loud: a click that changed nothing means the button moved, the
           // siege ended, or the server refused. If the frame can say WHY, say
           // that instead of leaving you to guess.
           const why = out.blocked ? ` — ${out.blocked}` : "";
-          this.toast(`Heal did not take${why}. ${hero.name} is still ${out.before}/${out.maxHp}.`, true);
+          live.update(`Heal did not take${why}. ${hero.name} is still ${out.before}/${out.maxHp}.`, true);
         }
       } catch (e) {
         console.warn("[Seneschal] heal failed:", e);
-        this.toast(`Could not heal ${hero.name}: ${e.message}`, true);
+        live.update(`Could not heal ${hero.name}: ${e.message}`, true);
       } finally {
-        button.classList.remove("dk-busy");
-        this._refreshHeroes(); // keeps the current rows up while it re-reads
+        this.healing.delete(key);
+        this._paintHealing();
+        // Re-read once the LAST heal lands, not after each. Refreshing between
+        // concurrent heals re-renders the rows out from under the ones still
+        // running, and costs a fetch per hero for a roster that is about to
+        // change again anyway.
+        if (!this.healing.size) this._refreshHeroes();
+      }
+    }
+
+    /**
+     * Repaint which heals are in flight.
+     *
+     * Keyed by hero + method rather than held on the element, because the
+     * roster re-renders while heals are running and every button identity is
+     * replaced. Same reasoning as _paintPending for menu entries.
+     */
+    _paintHealing() {
+      if (!this.rail) return;
+      for (const button of this.rail.querySelectorAll(".dk-method")) {
+        const busy = this.healing.has(button.dataset.healKey);
+        button.classList.toggle("dk-busy", busy);
+        button.setAttribute("aria-busy", busy ? "true" : "false");
+        if (busy && !button.querySelector(".dk-spinner")) {
+          button.textContent = "";
+          const spin = document.createElement("span");
+          spin.className = "dk-spinner";
+          button.appendChild(spin);
+        } else if (!busy && button.querySelector(".dk-spinner")) {
+          button.textContent = button.dataset.glyph || "";
+        }
       }
     }
 
@@ -656,27 +725,48 @@
      * it, and in an automated browser they hang the session outright. Anything
      * that needs an answer asks here.
      *
+     * Questions QUEUE rather than replace one another. Only one is ever on
+     * screen — two open panels beside the rail would be unreadable, and worse,
+     * ambiguous about which one Enter answers — but firing five heal buttons in
+     * a row used to answer the first four "no" without saying so. You pressed
+     * five buttons and one hero got healed. They now line up and are asked in
+     * the order you clicked.
+     *
      * @returns {Promise<boolean>}
      */
     _ask({ title, body, confirmLabel = "Confirm" }) {
-      this._closeAsk(false); // never stack two questions
       return new Promise((resolve) => {
-        this.askResolve = resolve;
-        this.askTitleEl.textContent = title;
-        this.askBodyEl.textContent = body || "";
-        this.askBodyEl.hidden = !body;
-        this.askYes.textContent = confirmLabel;
-        this.ask.hidden = false;
-        this.askYes.focus();
+        this.askQueue.push({ title, body, confirmLabel, resolve });
+        if (!this.askResolve) this._pumpAsk();
       });
     }
 
-    /** Settle an open question. Safe to call when nothing is open. */
+    /** Put the next queued question on screen, if nothing is being asked. */
+    _pumpAsk() {
+      const next = this.askQueue.shift();
+      if (!next) return;
+      this.askResolve = next.resolve;
+      this.askTitleEl.textContent = next.title;
+      this.askBodyEl.textContent = next.body || "";
+      this.askBodyEl.hidden = !next.body;
+      this.askYes.textContent = next.confirmLabel;
+      this.ask.hidden = false;
+      this.askYes.focus();
+    }
+
+    /** Settle the open question and show the next. Safe when nothing is open. */
     _closeAsk(answer) {
       if (this.ask) this.ask.hidden = true;
       const resolve = this.askResolve;
       this.askResolve = null;
       if (resolve) resolve(answer);
+      if (this.askQueue.length) this._pumpAsk();
+    }
+
+    /** Answer everything still waiting with "no". Nothing queued ever spends. */
+    _drainAsks() {
+      const waiting = this.askQueue.splice(0);
+      for (const q of waiting) q.resolve(false);
     }
 
     _span(className, text) {
@@ -733,17 +823,18 @@
 
     /** Like toast(), but stays up until the hunt ends rather than timing out. */
     busyToast(message) {
-      clearTimeout(this.toastTimer);
-      this.toastEl.textContent = message;
-      this.toastEl.hidden = false;
-      this.toastEl.setAttribute("data-busy", "true");
+      if (this.busyHandle) {
+        this.busyHandle.update(message);
+        return this.busyHandle;
+      }
+      this.busyHandle = this.toast(message, { busy: true });
+      return this.busyHandle;
     }
 
     _clearBusyToast() {
-      if (!this.toastEl.hasAttribute("data-busy")) return; // an error toast owns it now
-      this.toastEl.removeAttribute("data-busy");
-      this.toastEl.hidden = true;
-      this.toastEl.textContent = "";
+      if (!this.busyHandle) return;
+      this.busyHandle.dismiss();
+      this.busyHandle = null;
     }
 
     _itemButton(item) {
@@ -772,11 +863,16 @@
       const base = `${item.label} — raise a spectral host of ${SEN.necro.formatCount(size)}`;
       if (!this.souls) return `${base}\nSoul balance not read yet`;
       const n = SEN.necro;
-      const pool =
-        this.souls.dead == null
-          ? ""
-          : `, ${n.formatCount(this.souls.dead)} raisable dead`;
-      return `${base}\n${n.formatCount(this.souls.souls)} souls${pool}, read ${n.formatAge(this.souls.at)}`;
+      const lines = [base];
+      if (this.souls.host != null) {
+        lines.push(
+          `Standing host: ${n.formatCount(this.souls.host)} ghosts${this.souls.armed ? " (armed)" : " (not armed)"}`
+        );
+      }
+      const pool = this.souls.dead == null ? "" : `, ${n.formatCount(this.souls.dead)} raisable dead`;
+      lines.push(`${n.formatCount(this.souls.souls)} souls${pool}`);
+      lines.push(`Read ${n.formatAge(this.souls.at)}`);
+      return lines.join("\n");
     }
 
     /**
@@ -794,14 +890,32 @@
     _soulsBadge() {
       if (!this.souls) return "—";
       const n = SEN.necro;
-      const souls = `${n.formatShort(this.souls.souls)}💀`;
-      if (this.souls.dead == null) return souls;
-      return `${souls} ${n.formatShort(this.souls.dead)}👻`;
+      // The HOST you have standing is the headline: it is the thing this
+      // button manages, and the one number that says whether you need to act
+      // at all. Souls and the pool are what it costs, and they go underneath.
+      // A host that could not be read shows nothing rather than 0 — "you have
+      // none" is exactly the reading that talks you into raising a second one.
+      if (this.souls.host == null) return `${n.formatShort(this.souls.souls)}💀`;
+      return `${n.formatShort(this.souls.host)}⚔${this.souls.armed ? "" : "·"}`;
+    }
+
+    /** The line under the rite: what a raise would draw on. */
+    _soulsDetail() {
+      if (!this.souls) return "";
+      const n = SEN.necro;
+      const bits = [`${n.formatCount(this.souls.souls)} souls`];
+      if (this.souls.dead != null) bits.push(`${n.formatCount(this.souls.dead)} raisable`);
+      return bits.join(" · ");
     }
 
     _paintSouls() {
       if (!this.rail) return;
       const fresh = this.souls && Date.now() - (this.souls.at || 0) < SOULS_FRESH_MS;
+      const detail = this.rail.querySelector('[data-role="souls-detail"]');
+      if (detail) {
+        detail.textContent = this._soulsDetail();
+        detail.hidden = !detail.textContent || this.settings.dock.collapsed;
+      }
       for (const btn of this.rail.querySelectorAll('.dk-btn[data-type="host"]')) {
         const badge = btn.querySelector('[data-role="souls"]');
         if (!badge) continue;
@@ -835,8 +949,31 @@
       this.soulsTimer = setInterval(look, SOULS_POLL_MS);
     }
 
+    /**
+     * Re-read what the rail displays, after a rite has changed it.
+     *
+     * The balance comes off whatever page is on screen when it happens to be
+     * the rites; the standing host has no rendered source at all and needs its
+     * own fetch. Both are caches, and both are allowed to fail quietly — a
+     * stale badge is greyed, and a badge that cannot be read shows nothing
+     * rather than a wrong number.
+     */
+    async _refreshRites() {
+      const host = await SEN.necro.loadGhostHost();
+      if (host) {
+        this.souls = { ...(this.souls || { souls: 0 }), host: host.size, armed: host.armed, at: Date.now() };
+        this._paintSouls();
+        await store.set(SOULS_KEY, this.souls);
+      }
+    }
+
     _recordSouls(reading) {
-      const next = { ...reading, at: Date.now() };
+      // Keep the standing host: it comes from a different source on a different
+      // schedule, and a balance poll must not blank it.
+      const kept = this.souls && this.souls.host != null
+        ? { host: this.souls.host, armed: this.souls.armed }
+        : {};
+      const next = { ...kept, ...reading, at: Date.now() };
       const same =
         this.souls &&
         this.souls.souls === next.souls &&
@@ -944,12 +1081,10 @@
         session.clear(PENDING_KEY);
         return;
       }
-      // Arrival at the rites is defined by a readable balance, not by a click
-      // having happened. Now that the door IS the rites URL, the page we just
-      // loaded is usually already the destination — and the label we would
-      // hunt for is its own nav entry, sitting right there. Clicking it would
-      // navigate back to where we already are.
-      if (pending.rite && SEN.necro.readBalance(document)) {
+      // A rite pending from an older build: rites no longer navigate at all,
+      // so there is nothing to resume and clicking the nav entry it names would
+      // just move the user for no reason. Drop it.
+      if (pending.rite) {
         session.clear(PENDING_KEY);
         this._setPending(null);
         return;
@@ -1074,16 +1209,28 @@
       };
 
       try {
-        const reading = await this._reachRites(item);
-        if (!reading) {
+        busy("Reading the rites…");
+        // Read the panel in a hidden frame rather than walking the user to it.
+        // Loading a page and selecting a control costs GETs only (finding 11),
+        // so this cannot disturb what is on screen — and being sent to
+        // /necromancy and abandoned there was never the point of the button.
+        const scope = await this._openRites();
+        if (!scope) {
           refuse(
-            `could not find the soul balance. Check that "${item.match}" still opens the rites panel — the game moves it.`
+            "could not reach the rites page to read the soul balance. The game may have moved it again."
           );
           return;
         }
-        busy("Reading the rites…");
+        const { doc, close } = scope;
+        this._riteScope = close;
 
-        const host = SEN.necro.findRiteCard("host");
+        const reading = SEN.necro.parseBalance(SEN.necro.blockText(doc.body));
+        if (!reading) {
+          refuse("reached the rites page but found no soul balance on it.");
+          return;
+        }
+
+        const host = SEN.necro.findRiteCard("host", doc);
         if (!host) {
           refuse("no Spectral Host rite on this page, or it sits too close to another rite to tell them apart.");
           return;
@@ -1130,7 +1277,7 @@
         }
         const deadHave = reading.dead;
 
-        const harvest = SEN.necro.findRiteCard("harvest");
+        const harvest = SEN.necro.findRiteCard("harvest", doc);
         const harvestButton = harvest ? SEN.necro.performButton(harvest) : null;
         const perHarvest = harvestButton
           ? SEN.necro.parseSoulDelta(SEN.scanner.labelOf(harvestButton))
@@ -1154,14 +1301,46 @@
 
         const target = choice === "raise-less" ? plan.canRaiseInstead : plan.want;
         const harvests = choice === "harvest" ? plan.harvests : 0;
-        await this._performRite({ item, target, harvests, sizing, busy });
+        // The frame the plan was read from is deliberately CLOSED before
+        // performing. Its document has been sitting open while the user read
+        // the sheet, so its buttons are as stale as the numbers on them; the
+        // rite reopens and re-reads, and refuses if the balance moved.
+        close();
+        this._riteScope = null;
+        await this._performRite({ item, target, harvests, sizing, busy, expectSouls: reading.souls });
       } catch (err) {
         const message = (err && err.message) || String(err);
         console.warn("[Seneschal] raise host:", err);
         this.toast(`Raise host: ${message}`, true);
       } finally {
+        if (this._riteScope) {
+          this._riteScope();
+          this._riteScope = null;
+        }
         this.running = false;
         this._setPending(null);
+      }
+    }
+
+    /**
+     * Open the rites in a hidden frame and hand back its document.
+     *
+     * @returns {Promise<{doc:Document, close:Function}|null>}
+     */
+    async _openRites() {
+      let frame = null;
+      try {
+        frame = SEN.heroes.openFrame(SEN.necro.RITES_PATH);
+        await frame.ready;
+        await sleep(SEN.heroes.SETTLE_MS);
+        const doc = frame.el.contentDocument;
+        if (!doc || !doc.body) throw new Error("no document in the rites frame");
+        const close = frame.close;
+        return { doc, close };
+      } catch (e) {
+        if (frame) frame.close();
+        if (!SEN.heroes.isAbort(e)) console.warn("[Seneschal] rites frame:", e);
+        return null;
       }
     }
 
@@ -1181,69 +1360,28 @@
     }
 
     /**
-     * Get to the rites panel and come back with a balance reading.
-     *
-     * Arrival is defined as "a soul balance is readable", not "the nav click
-     * happened" — the panel renders asynchronously, and a reading is the only
-     * proof we are actually looking at it.
+     * The rites used to be reached by NAVIGATING to them — walk the door, hunt
+     * the nav label, and leave the user standing on /necromancy whether or not
+     * they wanted to be there. That whole path is gone: _openRites loads the
+     * page in a hidden frame instead, so the button performs a rite rather than
+     * performing a page change. The `match` and `door` fields on a host entry
+     * are kept only as the record of where the panel is; RITES_PATH is what is
+     * actually loaded.
      */
-    async _reachRites(item) {
-      const here = SEN.necro.readBalance(document);
-      if (here) return here;
-
-      const onPage = this._findNavMatch(item.match);
-      if (onPage) {
-        onPage.click();
-        return await this._awaitBalance();
-      }
-      if (!item.door) return null;
-
-      const pending = {
-        id: item.id,
-        match: item.match,
-        label: item.label,
-        // Marks this as a walk to the rites rather than to a nav entry, so the
-        // resume after the page load knows that a readable balance already
-        // means "arrived" and there is nothing left to click.
-        rite: true,
-        expires: Date.now() + RESOLVE_MS,
-      };
-      session.write(PENDING_KEY, pending);
-      if (!this._goto(item.door)) {
-        this._stopWatching();
-        session.clear(PENDING_KEY);
-        return null;
-      }
-      // quiet: a miss here is reported by _raiseHost in rite-specific words.
-      const found = await this._watchFor(pending, true);
-      if (!found) return null;
-      return await this._awaitBalance();
-    }
-
-    async _awaitBalance(ms = RESOLVE_MS) {
-      const stop = Date.now() + ms;
-      for (;;) {
-        const reading = SEN.necro.readBalance(document);
-        if (reading) {
-          this._recordSouls(reading);
-          return reading;
-        }
-        if (Date.now() >= stop) return null;
-        await sleep(150);
-      }
-    }
 
     /**
      * Wait for a rite to actually change the balance.
      * @returns {Object|null} the new reading, or null if nothing moved — which
      *   the caller must treat as "stop", never as "click it again".
      */
-    async _awaitSoulChange(before, ms = RITE_SETTLE_MS) {
+    async _awaitSoulChange(before, doc = document, ms = RITE_SETTLE_MS) {
       const stop = Date.now() + ms;
       for (;;) {
         await sleep(150);
-        const reading = SEN.necro.readBalance(document);
+        const reading = SEN.necro.parseBalance(SEN.necro.blockText(doc.body));
         if (reading && reading.souls !== before) {
+          // Only a reading of the page the USER is on belongs in the cache; a
+          // frame's numbers are the same account, so record either.
           this._recordSouls(reading);
           return reading;
         }
@@ -1260,69 +1398,66 @@
      * difference between "the yield was smaller than advertised" and "we are
      * clicking something that is not the harvest button, forty times".
      */
-    async _performRite({ item, target, harvests, sizing, busy }) {
-      let done = 0;
-      for (let i = 0; i < harvests; i++) {
-        busy(`Soul-Harvest ${i + 1} of ${harvests}…`);
-        const card = SEN.necro.findRiteCard("harvest");
-        const button = card ? SEN.necro.performButton(card) : null;
-        if (!button) {
-          throw new Error(
-            `the Soul-Harvest button vanished after ${done} sacrifice${done === 1 ? "" : "s"} — stopped, nothing raised.`
-          );
-        }
-        if (SEN.necro.isBlocked(button)) {
-          throw new Error(
-            `the Soul-Harvest button is disabled after ${done} sacrifice${done === 1 ? "" : "s"} — stopped, nothing raised.`
-          );
-        }
-        const before = (SEN.necro.readBalance(document) || {}).souls;
-        button.click();
-        const after = await this._awaitSoulChange(before);
-        if (!after) {
-          throw new Error(
-            `Soul-Harvest ${i + 1} did not change the balance — stopped after ${done} sacrifice${done === 1 ? "" : "s"}, nothing raised.`
-          );
-        }
-        done += 1;
-      }
+    async _performRite({ item, target, harvests, sizing, busy, expectSouls }) {
+      // Reopened fresh: the frame the plan was read from sat open while the
+      // user read the sheet, so every button in it is as stale as the numbers
+      // that were on it. This one is seconds old and is re-read before it acts.
+      busy("Opening the rites…");
+      const scope = await this._openRites();
+      if (!scope) throw new Error("could not reach the rites to perform them.");
+      const { doc, close } = scope;
+      this._riteScope = close;
 
-      busy(`Raising ${SEN.necro.formatCount(target)}…`);
-      // Re-find: the harvests above re-rendered the panel underneath us.
-      const card = SEN.necro.findRiteCard("host");
-      const button = card ? SEN.necro.performButton(card) : null;
-      if (!button) throw new Error("the Spectral Host button vanished before the raise.");
-      if (SEN.necro.isBlocked(button)) {
-        throw new Error(
-          `the Spectral Host button is disabled${done ? ` after ${done} sacrifice${done === 1 ? "" : "s"}` : ""} — nothing raised.`
-        );
-      }
-
-      if (sizing.kind === "input") {
-        const input = SEN.necro.sizeInput(card);
-        if (!input) throw new Error("the host size field vanished before the raise.");
-        if (!SEN.necro.setNumber(input, target)) {
-          throw new Error(
-            `could not set the host size to ${SEN.necro.formatCount(target)} — it read back as "${input.value}". Nothing performed.`
-          );
+      try {
+        let done = 0;
+        let expect = expectSouls;
+        for (let i = 0; i < harvests; i++) {
+          busy(`Soul-Harvest ${i + 1} of ${harvests}…`);
+          const card = SEN.necro.findRiteCard("harvest", doc);
+          const button = card ? SEN.necro.performButton(card) : null;
+          if (!button) {
+            throw new Error(
+              `the Soul-Harvest button vanished after ${done} sacrifice${done === 1 ? "" : "s"} — stopped, nothing raised.`
+            );
+          }
+          if (SEN.necro.isBlocked(button)) {
+            throw new Error(
+              `the Soul-Harvest button is disabled after ${done} sacrifice${done === 1 ? "" : "s"} — stopped, nothing raised.`
+            );
+          }
+          const before = (SEN.necro.parseBalance(SEN.necro.blockText(doc.body)) || {}).souls;
+          button.click();
+          const after = await this._awaitSoulChange(before, doc);
+          if (!after) {
+            throw new Error(
+              `Soul-Harvest ${i + 1} did not change the balance — stopped after ${done} sacrifice${done === 1 ? "" : "s"}, nothing raised.`
+            );
+          }
+          expect = after.souls;
+          done += 1;
         }
-      }
 
-      const before = (SEN.necro.readBalance(document) || {}).souls;
-      button.click();
-      const after = await this._awaitSoulChange(before);
-      this._setPending(null);
-      if (!after) {
+        busy(`Raising ${SEN.necro.formatCount(target)}…`);
+        const out = await SEN.necro.raiseInFrame({ want: target, expectSouls: expect, doc });
+        this._setPending(null);
+        if (!out.raised) {
+          const why = out.blocked ? ` — ${out.blocked}` : "";
+          this.toast(
+            `Raise host: clicked Spectral Host but the balance did not move${why}${done ? ` (${done} sacrifice${done === 1 ? "" : "s"} were made)` : ""}.`,
+            true
+          );
+          return;
+        }
         this.toast(
-          `Raise host: clicked Spectral Host but the balance did not move${done ? ` (${done} sacrifice${done === 1 ? "" : "s"} were made)` : ""}. Check the page.`,
-          true
+          `Raised ${SEN.necro.formatCount(out.want)} ghosts — ${SEN.necro.formatCount(out.spent)} souls spent, ${SEN.necro.formatCount(out.after)} left.`
         );
-        return;
+        this._refreshRites();
+      } finally {
+        if (this._riteScope) {
+          this._riteScope();
+          this._riteScope = null;
+        }
       }
-      const spent = before - after.souls;
-      this.toast(
-        `Raised a host — ${SEN.necro.formatCount(spent)} souls spent, ${SEN.necro.formatCount(after.souls)} left.`
-      );
     }
 
     // --- confirmation sheet ---------------------------------------------------
@@ -1467,7 +1602,11 @@
 
     // --- add form ------------------------------------------------------------
     _openForm() {
-      this._closeAsk(false); // one panel beside the rail at a time
+      // One panel beside the rail at a time. Opening the add form abandons any
+      // question in flight AND anything queued behind it — walking away from a
+      // heal you were asked about must not leave four more waiting to pounce.
+      this._drainAsks();
+      this._closeAsk(false);
       this.form.hidden = false;
       this._showError("");
       const label = this.wrap.querySelector("#dk-label");
@@ -1592,17 +1731,104 @@
       }
     }
 
-    // --- toast ---------------------------------------------------------------
-    /** @param {boolean} [warning] true keeps it up long enough to be read and acted on. */
-    toast(message, warning = false) {
-      this.toastEl.removeAttribute("data-busy");
-      this.toastEl.textContent = message;
-      this.toastEl.classList.toggle("dk-warn", warning);
-      this.toastEl.hidden = false;
-      clearTimeout(this.toastTimer);
-      this.toastTimer = setTimeout(() => {
-        this.toastEl.hidden = true;
-      }, warning ? TOAST_WARNING_MS : TOAST_MS);
+    // --- toasts --------------------------------------------------------------
+
+    /**
+     * Post a message beside the rail. Several can be up at once.
+     *
+     * A single slot was fine while every message answered a click you had just
+     * made. It stopped being fine the moment actions ran CONCURRENTLY: healing
+     * five heroes lands five results seconds apart, and each one overwrote the
+     * last, so you saw one line and had no idea the other four had happened.
+     *
+     * @param {string} message
+     * @param {boolean|{warning?:boolean, busy?:boolean}} [opts] `true` still
+     *   means "warning", so the fifteen existing call sites read unchanged.
+     * @returns {{update:Function, dismiss:Function, el:Element}} a handle, so a
+     *   slow action can post "Healing X…" and later become its own result
+     *   rather than leaving a stale line and adding a second one.
+     */
+    toast(message, opts = false) {
+      const { warning = false, busy = false } =
+        typeof opts === "boolean" ? { warning: opts } : opts || {};
+
+      const el = document.createElement("div");
+      el.className = "dk-toast" + (warning ? " dk-warn" : "");
+      const spinner = document.createElement("span");
+      spinner.className = "dk-spinner dk-toast-spin";
+      const text = document.createElement("span");
+      text.className = "dk-toast-text";
+      text.textContent = message;
+      if (busy) el.appendChild(spinner);
+      el.appendChild(text);
+
+      // Newest at the bottom, nearest the eye's last stop. Oldest goes when the
+      // stack is full, so a burst of results can never march off screen.
+      this.toastStack.appendChild(el);
+      while (this.toastStack.children.length > MAX_TOASTS) {
+        this.toastStack.firstElementChild.remove();
+      }
+      this._positionToasts();
+
+      let timer = null;
+      const arm = (ms) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => handle.dismiss(), ms);
+      };
+      const handle = {
+        el,
+        /** Turn a "…in flight" line into its own result, in place. */
+        update(next, nextOpts = false) {
+          const o = typeof nextOpts === "boolean" ? { warning: nextOpts } : nextOpts || {};
+          text.textContent = next;
+          el.classList.toggle("dk-warn", Boolean(o.warning));
+          if (o.busy) {
+            if (!spinner.isConnected) el.insertBefore(spinner, text);
+            clearTimeout(timer);
+          } else {
+            spinner.remove();
+            arm(o.warning ? TOAST_WARNING_MS : TOAST_MS);
+          }
+          return handle;
+        },
+        dismiss() {
+          clearTimeout(timer);
+          el.remove();
+        },
+      };
+      // A busy toast has no deadline: it is up because something is still
+      // happening, and it comes down when that thing reports.
+      if (!busy) arm(warning ? TOAST_WARNING_MS : TOAST_MS);
+      return handle;
+    }
+
+    /**
+     * Sit the stack BESIDE the rail rather than in a screen corner.
+     *
+     * Measured, because the rail's width is its content's: it changes when the
+     * menu changes, when it collapses, and when the hero panel appears. CSS
+     * alone cannot follow that, so the rail's own box drives the offset and the
+     * stack tracks whichever edge the rail is pinned to.
+     */
+    _positionToasts() {
+      if (!this.toastStack || !this.rail) return;
+      // getBoundingClientRect forces layout, and this runs on every render
+      // (CLAUDE.md finding 6). Nothing to place means nothing to measure.
+      if (!this.toastStack.children.length) return;
+      const r = this.rail.getBoundingClientRect();
+      const side = this.settings.dock.side === "left" ? "left" : "right";
+      this.toastStack.classList.toggle("dk-toasts-left", side === "left");
+      const gap = 12;
+      if (side === "left") {
+        this.toastStack.style.left = `${Math.round(r.right + gap)}px`;
+        this.toastStack.style.right = "auto";
+      } else {
+        this.toastStack.style.right = `${Math.round(window.innerWidth - r.left + gap)}px`;
+        this.toastStack.style.left = "auto";
+      }
+      // Bottom-aligned with the rail, growing upward, so a new message never
+      // shifts the ones already being read.
+      this.toastStack.style.bottom = `${Math.max(8, Math.round(window.innerHeight - r.bottom))}px`;
     }
   }
 
